@@ -77,12 +77,27 @@ func init() {
 	maxprocs.Set(maxprocs.Logger(func(string, ...interface{}) {}))
 }
 
+func maybeEnableDefaultMutexProfiling() {
+	if *mutexProfileFraction > 0 {
+		return
+	}
+	// Temporary CI-friendly fallback: if debug HTTP and periodic profiling are
+	// already enabled, default mutex profiling on so a forked image can be
+	// validated without changing deployment args.
+	if *httpListenAddr == "" || *profileInterval <= 0 {
+		return
+	}
+	*mutexProfileFraction = 5
+	logutil.Infof("Mutex profiling auto-enabled with default fraction: %d", *mutexProfileFraction)
+}
+
 func main() {
 	if *maxProcessor > 0 {
 		system.SetGoMaxProcs(*maxProcessor)
 	}
 
 	flag.Parse()
+	maybeEnableDefaultMutexProfiling()
 	maybePrintVersion()
 	maybeRunInDaemonMode()
 
