@@ -15,11 +15,14 @@
 package fj
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/matrixorigin/matrixone/pkg/common/morpc"
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
+	"github.com/matrixorigin/matrixone/pkg/logservice"
+	logpb "github.com/matrixorigin/matrixone/pkg/pb/logservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/query"
 	"github.com/matrixorigin/matrixone/pkg/queryservice"
 	qclient "github.com/matrixorigin/matrixone/pkg/queryservice/client"
@@ -28,6 +31,44 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"github.com/stretchr/testify/require"
 )
+
+type testCNHAKeeperClient struct {
+	details logpb.ClusterDetails
+}
+
+func (c *testCNHAKeeperClient) Close() error { return nil }
+
+func (c *testCNHAKeeperClient) AllocateID(context.Context) (uint64, error) { return 0, nil }
+
+func (c *testCNHAKeeperClient) AllocateIDByKey(context.Context, string) (uint64, error) {
+	return 0, nil
+}
+
+func (c *testCNHAKeeperClient) AllocateIDByKeyWithBatch(context.Context, string, uint64) (uint64, error) {
+	return 0, nil
+}
+
+func (c *testCNHAKeeperClient) GetClusterDetails(context.Context) (logpb.ClusterDetails, error) {
+	return c.details, nil
+}
+
+func (c *testCNHAKeeperClient) GetClusterState(context.Context) (logpb.CheckerState, error) {
+	return logpb.CheckerState{}, nil
+}
+
+func (c *testCNHAKeeperClient) CheckLogServiceHealth(context.Context) error { return nil }
+
+func (c *testCNHAKeeperClient) GetBackupData(context.Context) ([]byte, error) { return nil, nil }
+
+func (c *testCNHAKeeperClient) SendCNHeartbeat(context.Context, logpb.CNStoreHeartbeat) (logpb.CommandBatch, error) {
+	return logpb.CommandBatch{}, nil
+}
+
+func (c *testCNHAKeeperClient) UpdateNonVotingReplicaNum(context.Context, uint64) error { return nil }
+
+func (c *testCNHAKeeperClient) UpdateNonVotingLocality(context.Context, logpb.Locality) error {
+	return nil
+}
 
 func Test_CanHandleFaultInjection(t *testing.T) {
 	id := uuid.New().String()
@@ -187,4 +228,83 @@ func Test_CanTransferCnFaultInject(t *testing.T) {
 	}
 	ret := CNFaultInject([]string{}, "ENABLE_FAULT_INJECTION", "", a1.proc)
 	require.Equal(t, res, ret)
+}
+
+func Test_CanTransferLogFaultInject(t *testing.T) {
+	old := logFaultInjectFn
+	defer func() { logFaultInjectFn = old }()
+
+	var calls []string
+	logFaultInjectFn = func(_ context.Context, sid string, address string, command string, parameter string) (string, error) {
+		calls = append(calls, sid+"|"+address+"|"+command+"|"+parameter)
+		return "OK", nil
+	}
+
+	proc := &process.Process{
+		Ctx: context.Background(),
+		Base: &process.BaseProcess{
+			Hakeeper: &testCNHAKeeperClient{
+				details: logpb.ClusterDetails{
+					LogStores: []logpb.LogStore{
+						{UUID: "log-0", ServiceAddress: "127.0.0.1:32000"},
+						{UUID: "log-1", ServiceAddress: "127.0.0.1:32001"},
+					},
+				},
+			},
+		},
+	}
+
+	ret := LogFaultInject([]string{"log-1"}, "ENABLE_FAULT_INJECTION", "", proc)
+	require.Equal(t, []PodResponse{{
+		PodType:   log,
+		PodID:     "log-1",
+		ReturnStr: "OK",
+	}}, ret)
+	require.Equal(t, []string{"|127.0.0.1:32001|ENABLE_FAULT_INJECTION|"}, calls)
+}
+
+func Test_CanTransferLogFaultInjectViaRealLogServiceRPC(t *testing.T) {
+	const point = "fj/logservice/heartbeat/drop-once"
+
+	logservice.RunClientTest(t, false, nil, func(
+		t *testing.T,
+		service *logservice.Service,
+		scfg logservice.ClientConfig,
+		_ logservice.Client,
+	) {
+		require.NotEmpty(t, scfg.ServiceAddresses)
+		proc := &process.Process{
+			Ctx: context.Background(),
+			Base: &process.BaseProcess{
+				Hakeeper: &testCNHAKeeperClient{
+					details: logpb.ClusterDetails{
+						LogStores: []logpb.LogStore{{
+							UUID:           service.ID(),
+							ServiceAddress: scfg.ServiceAddresses[0],
+						}},
+					},
+				},
+			},
+		}
+		defer func() {
+			_ = LogFaultInject([]string{service.ID()}, fault.RemoveFault, point, proc)
+			_ = LogFaultInject([]string{service.ID()}, fault.DisableFault, "", proc)
+		}()
+
+		ret := LogFaultInject([]string{service.ID()}, fault.EnableFault, "", proc)
+		require.Len(t, ret, 1)
+		require.Empty(t, ret[0].ErrorStr)
+		require.Contains(t, ret[0].ReturnStr, "OK")
+
+		ret = LogFaultInject([]string{service.ID()}, fault.AddFault,
+			point+"#:::#return#0##false", proc)
+		require.Len(t, ret, 1)
+		require.Empty(t, ret[0].ErrorStr)
+		require.Equal(t, "OK", ret[0].ReturnStr)
+
+		ret = LogFaultInject([]string{service.ID()}, fault.ListFault, "", proc)
+		require.Len(t, ret, 1)
+		require.Empty(t, ret[0].ErrorStr)
+		require.Contains(t, ret[0].ReturnList, fault.Point{Name: point})
+	})
 }

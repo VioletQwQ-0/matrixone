@@ -248,6 +248,7 @@ enum MethodType {
   CHECK_HEALTH = 26;
   READ_LSN = 27;
   UPDATE_LEASEHOLDER_ID = 28;
+  FAULT_INJECT = 29;
 };
 
 enum RecordType {
@@ -327,6 +328,7 @@ message Request {
   uint64 NonVotingReplicaNum     = 14;
   Locality NonVotingLocality     = 15;
   CheckHealth CheckHealth        = 16;
+  FaultInjectRequest FaultInjectRequest = 17;
 };
 
 message LogResponse {
@@ -353,6 +355,7 @@ message Response {
   ShardInfoQueryResult ShardInfo = 10;
   AllocateIDResponse AllocateID  = 11;
   CheckerState CheckerState      = 12;
+  FaultInjectResponse FaultInjectResponse = 13;
 };
 
 message LogRecordResponse {
@@ -772,4 +775,13 @@ message Locality {
 
 message CheckHealth {
   uint64 ShardID = 1;
+}
+
+message FaultInjectRequest {
+  string Method = 1;
+  string Parameters = 2;
+}
+
+message FaultInjectResponse {
+  string Resp = 1;
 }

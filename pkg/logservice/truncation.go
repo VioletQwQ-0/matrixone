@@ -170,6 +170,19 @@ func (l *store) exportSnapshot(ctx context.Context, shardID uint64, replicaID ui
 func (l *store) importSnapshot(
 	ctx context.Context, shardID uint64, replicaID uint64, lsn uint64, dir string,
 ) error {
+	recordedLSN := lsn
+	if override, _, ok := triggerFaultPoint(fjLogServiceSnapshotImportVersion); ok {
+		if override > 0 {
+			recordedLSN = uint64(override)
+		} else {
+			recordedLSN = lsn + 1
+		}
+		l.runtime.Logger().Info("override snapshot import version by fault injection",
+			zap.Uint64("shard", shardID),
+			zap.Uint64("replica", replicaID),
+			zap.Uint64("importLSN", lsn),
+			zap.Uint64("recordedLSN", recordedLSN))
+	}
 	// Import a snapshot to override the snapshot in system.
 	if err := l.nh.SyncRequestImportSnapshot(ctx, shardID, replicaID, dir); err != nil {
 		l.runtime.Logger().Error("import snapshot failed", zap.Error(err))
@@ -178,7 +191,7 @@ func (l *store) importSnapshot(
 	l.runtime.Logger().Info("import snapshot success",
 		zap.Uint64("shard", shardID),
 		zap.Uint64("replica", replicaID),
-		zap.Uint64("index", lsn),
+		zap.Uint64("index", recordedLSN),
 		zap.String("dir", dir),
 	)
 	// Then remove the exported snapshot in manager.
@@ -187,7 +200,7 @@ func (l *store) importSnapshot(
 		return err
 	}
 	// forward the truncate lsn.
-	l.shardSnapshotInfo.forwardTruncate(shardID, lsn)
+	l.shardSnapshotInfo.forwardTruncate(shardID, recordedLSN)
 	return nil
 }
 

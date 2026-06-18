@@ -25,6 +25,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/morpc"
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/defines"
+	"github.com/matrixorigin/matrixone/pkg/logservice"
 	logpb "github.com/matrixorigin/matrixone/pkg/pb/logservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/pb/query"
@@ -37,8 +38,11 @@ type serviceType string
 const (
 	tn  serviceType = "DN"
 	cn  serviceType = "CN"
+	log serviceType = "LOG"
 	all serviceType = "ALL"
 )
+
+var logFaultInjectFn = logservice.FaultInject
 
 func unmarshalResp(command string, payload []byte, res *PodResponse) {
 	switch command {

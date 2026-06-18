@@ -39,6 +39,7 @@ import (
 	pb "github.com/matrixorigin/matrixone/pkg/pb/logservice"
 	"github.com/matrixorigin/matrixone/pkg/taskservice"
 	"github.com/matrixorigin/matrixone/pkg/util"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 )
@@ -360,6 +361,8 @@ func (s *Service) handle(ctx context.Context, req pb.Request,
 		return s.handleCheckHealth(ctx, req), pb.LogRecordResponse{}
 	case pb.READ_LSN:
 		return s.handleReadLsn(ctx, req)
+	case pb.FAULT_INJECT:
+		return s.handleFaultInject(ctx, req), pb.LogRecordResponse{}
 	default:
 		resp := getResponse(req)
 		resp.ErrorCode, resp.ErrorMessage = toErrorCode(
@@ -739,6 +742,23 @@ func (s *Service) handleCheckHealth(_ context.Context, req pb.Request) pb.Respon
 	resp := getResponse(req)
 	if err := s.store.checkHealth(r.ShardID); err != nil {
 		resp.ErrorCode, resp.ErrorMessage = toErrorCode(err)
+	}
+	return resp
+}
+
+func (s *Service) handleFaultInject(ctx context.Context, req pb.Request) pb.Response {
+	resp := getResponse(req)
+	if req.FaultInjectRequest == nil {
+		resp.ErrorCode, resp.ErrorMessage = toErrorCode(
+			moerr.NewInvalidInput(ctx, "missing fault inject request"))
+		return resp
+	}
+	resp.FaultInjectResponse = &pb.FaultInjectResponse{
+		Resp: fault.HandleFaultInject(
+			ctx,
+			req.FaultInjectRequest.Method,
+			req.FaultInjectRequest.Parameters,
+		),
 	}
 	return resp
 }

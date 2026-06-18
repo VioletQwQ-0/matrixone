@@ -44,14 +44,28 @@ func (s *Service) handleCommands(cmds []pb.ScheduleCommand) {
 			case pb.RemoveNonVotingReplica:
 				s.handleRemoveReplica(cmd)
 			case pb.StartReplica:
+				if _, _, ok := triggerFaultPoint(fjHAKeeperCommandDropLStartOnce); ok {
+					s.runtime.Logger().Info("drop L/Start by fault injection",
+						zap.String("command", cmd.LogString()))
+					continue
+				}
 				s.handleStartReplica(cmd)
 			case pb.StartNonVotingReplica:
+				if _, _, ok := triggerFaultPoint(fjHAKeeperCommandDropLStartOnce); ok {
+					s.runtime.Logger().Info("drop L/StartNonVoting by fault injection",
+						zap.String("command", cmd.LogString()))
+					continue
+				}
 				s.handleStartNonVotingReplica(cmd)
 			case pb.StopReplica:
 				s.handleStopReplica(cmd)
 			case pb.StopNonVotingReplica:
 				s.handleStopReplica(cmd)
 			case pb.KillZombie:
+				if _, _, ok := triggerFaultPoint(fjHAKeeperCommandDelayLKill); ok {
+					s.runtime.Logger().Info("delay L/Kill by fault injection",
+						zap.String("command", cmd.LogString()))
+				}
 				s.handleKillZombie(cmd)
 			default:
 				panic(fmt.Sprintf("unknown config change cmd type %d", cmd.ConfigChange.ChangeType))
@@ -243,8 +257,27 @@ func (s *Service) heartbeat(ctx context.Context) {
 	}
 
 	hb := s.store.getHeartbeatMessage()
+	if _, sarg, ok := triggerFaultPoint(fjLogServiceHeartbeatReportStaleView); ok {
+		if sarg == "drop-replicas" {
+			hb.Replicas = nil
+		} else {
+			for i := range hb.Replicas {
+				if hb.Replicas[i].Epoch > 1 {
+					hb.Replicas[i].Epoch--
+				}
+			}
+		}
+	}
 	hb.TaskServiceCreated = s.taskServiceCreated()
 	hb.ConfigData = s.config.GetData()
+
+	if _, _, ok := triggerFaultPoint(fjLogServiceHeartbeatDelay); ok {
+		s.runtime.Logger().Info("logservice heartbeat delayed by fault injection")
+	}
+	if _, _, ok := triggerFaultPoint(fjLogServiceHeartbeatDropOnce); ok {
+		s.runtime.Logger().Info("logservice heartbeat dropped by fault injection")
+		return
+	}
 
 	cb, err := s.haClient.SendLogHeartbeat(ctx2, hb)
 	if err != nil {

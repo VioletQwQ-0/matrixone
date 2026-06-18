@@ -15,7 +15,9 @@
 package fj
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	"github.com/fagongzi/util/protoc"
 	"github.com/matrixorigin/matrixone/pkg/clusterservice"
@@ -23,6 +25,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/pb/api"
+	logpb "github.com/matrixorigin/matrixone/pkg/pb/logservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/pb/query"
 	"github.com/matrixorigin/matrixone/pkg/pb/txn"
@@ -66,7 +69,7 @@ func FaultInject(ivecs []*vector.Vector, result vector.FunctionResultWrapper, pr
 	command := strings.ToUpper(functionUtil.QuickBytesToStr(arg1))
 	parameter := functionUtil.QuickBytesToStr(arg2)
 
-	if service != tn && service != cn && service != all {
+	if service != tn && service != cn && service != log && service != all {
 		return moerr.NewNotSupportedf(proc.Ctx, "service %s not supported", service)
 	}
 
@@ -78,6 +81,10 @@ func FaultInject(ivecs []*vector.Vector, result vector.FunctionResultWrapper, pr
 
 	if service == cn || service == all {
 		res = append(res, CNFaultInject(pods, command, parameter, proc)...)
+	}
+
+	if service == log {
+		res = append(res, LogFaultInject(pods, command, parameter, proc)...)
 	}
 
 	return rs.AppendBytes(json.Pretty(res), false)
@@ -208,4 +215,68 @@ func TNFaultInject(pods []string, command string, parameter string, proc *proces
 	}
 
 	return tnRes
+}
+
+func LogFaultInject(pods []string, command string, parameter string, proc *process.Process) []PodResponse {
+	logStores, err := getLogStores(proc)
+	if err != nil {
+		return []PodResponse{{
+			PodType:  log,
+			ErrorStr: err.Error(),
+		}}
+	}
+
+	selected := make(map[string]struct{}, len(pods))
+	if len(pods) > 0 {
+		for _, pod := range pods {
+			selected[pod] = struct{}{}
+		}
+	}
+
+	var logRes []PodResponse
+	for _, store := range logStores {
+		if len(selected) > 0 {
+			if _, ok := selected[store.UUID]; !ok {
+				continue
+			}
+		}
+		res := PodResponse{
+			PodType: log,
+			PodID:   store.UUID,
+		}
+		if store.ServiceAddress == "" {
+			res.ErrorStr = "missing logservice address"
+			logRes = append(logRes, res)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(faultInjectContext(proc), time.Second*10)
+		resp, err := logFaultInjectFn(ctx, proc.GetService(), store.ServiceAddress, command, parameter)
+		cancel()
+		if err != nil {
+			res.ErrorStr = err.Error()
+		} else {
+			unmarshalResp(command, []byte(resp), &res)
+		}
+		logRes = append(logRes, res)
+	}
+	return logRes
+}
+
+func getLogStores(proc *process.Process) ([]logpb.LogStore, error) {
+	hakeeper := proc.GetHaKeeper()
+	if hakeeper == nil {
+		return nil, moerr.NewNoHAKeeper(faultInjectContext(proc))
+	}
+	details, err := hakeeper.GetClusterDetails(faultInjectContext(proc))
+	if err != nil {
+		return nil, err
+	}
+	return details.LogStores, nil
+}
+
+func faultInjectContext(proc *process.Process) context.Context {
+	if proc != nil && proc.Ctx != nil {
+		return proc.Ctx
+	}
+	return context.Background()
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -633,6 +634,27 @@ func (l *store) addLogShard(ctx context.Context, addLogShard pb.AddLogShard) err
 	return nil
 }
 
+// configChangePendingFaulted simulates a shard being pending in dragonboat's
+// cluster info by suppressing its heartbeat/reporting and checkHealth response.
+func configChangePendingFaulted(shardID uint64) bool {
+	if shardID == hakeeper.DefaultHAKeeperShardID {
+		return false
+	}
+	_, sarg, ok := triggerFaultPoint(fjLogServiceConfigChangePendingWindow)
+	if !ok {
+		return false
+	}
+	targetShardID := uint64(1)
+	if sarg != "" {
+		parsed, err := strconv.ParseUint(sarg, 10, 64)
+		if err != nil {
+			return false
+		}
+		targetShardID = parsed
+	}
+	return shardID == targetShardID
+}
+
 func (l *store) checkHealth(shardID uint64) error {
 	opts := dragonboat.NodeHostInfoOption{
 		SkipLogInfo: true,
@@ -640,6 +662,10 @@ func (l *store) checkHealth(shardID uint64) error {
 	nhi := l.nh.GetNodeHostInfo(opts)
 	for _, ci := range nhi.ShardInfoList {
 		if ci.ShardID == shardID {
+			if configChangePendingFaulted(ci.ShardID) {
+				return moerr.NewInternalErrorNoCtxf("shard %d is pending on store %s by fault injection",
+					shardID, l.cfg.UUID)
+			}
 			if ci.Pending {
 				return moerr.NewInternalErrorNoCtxf("shard %d is pending on store %s",
 					shardID, l.cfg.UUID)
@@ -1270,6 +1296,11 @@ func (l *store) getHeartbeatMessage() pb.LogStoreHeartbeat {
 	}
 	nhi := l.nh.GetNodeHostInfo(opts)
 	for _, ci := range nhi.ShardInfoList {
+		if configChangePendingFaulted(ci.ShardID) {
+			l.runtime.Logger().Info(fmt.Sprintf("shard %d is pending, not included into the heartbeat by fault injection",
+				ci.ShardID))
+			continue
+		}
 		if ci.Pending {
 			l.runtime.Logger().Info(fmt.Sprintf("shard %d is pending, not included into the heartbeat",
 				ci.ShardID))

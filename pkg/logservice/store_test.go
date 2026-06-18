@@ -36,6 +36,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/pb/task"
 	"github.com/matrixorigin/matrixone/pkg/taskservice"
+	"github.com/matrixorigin/matrixone/pkg/util/fault"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -749,6 +750,52 @@ func TestStopReplicaCanResetHAKeeperReplicaID(t *testing.T) {
 		assert.Equal(t, uint64(1), atomic.LoadUint64(&store.haKeeperReplicaID))
 		assert.NoError(t, store.stopReplica(hakeeper.DefaultHAKeeperShardID, 1))
 		assert.Equal(t, uint64(0), atomic.LoadUint64(&store.haKeeperReplicaID))
+	}
+	runStoreTest(t, fn)
+}
+
+func TestConfigChangePendingFaultSkipsHeartbeatReplica(t *testing.T) {
+	fn := func(t *testing.T, store *store) {
+		mustHaveReplica(t, store, 1, 2)
+		fault.Enable()
+		defer fault.Disable()
+		require.NoError(t, fault.AddFaultPoint(
+			context.Background(),
+			fjLogServiceConfigChangePendingWindow,
+			":::",
+			"return",
+			0,
+			"1",
+			false,
+		))
+
+		hb := store.getHeartbeatMessage()
+		for _, info := range hb.Replicas {
+			require.NotEqual(t, uint64(1), info.ShardID)
+		}
+	}
+	runStoreTest(t, fn)
+}
+
+func TestConfigChangePendingFaultAffectsCheckHealth(t *testing.T) {
+	fn := func(t *testing.T, store *store) {
+		mustHaveReplica(t, store, 1, 2)
+		fault.Enable()
+		defer fault.Disable()
+		require.NoError(t, fault.AddFaultPoint(
+			context.Background(),
+			fjLogServiceConfigChangePendingWindow,
+			":::",
+			"return",
+			0,
+			"1",
+			false,
+		))
+
+		err := store.checkHealth(1)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "pending on store")
+		require.Contains(t, err.Error(), "fault injection")
 	}
 	runStoreTest(t, fn)
 }
