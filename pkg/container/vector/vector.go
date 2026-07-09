@@ -1010,6 +1010,52 @@ func (v *Vector) Dup(mp *mpool.MPool) (*Vector, error) {
 	return w, nil
 }
 
+// DupWithOffHeap copies an identical vector and controls where copied buffers are allocated.
+func (v *Vector) DupWithOffHeap(mp *mpool.MPool, offHeap bool) (*Vector, error) {
+	if v.IsConstNull() {
+		w := NewConstNull(v.typ, v.Length(), mp)
+		w.sorted = v.sorted
+		w.isBin = v.isBin
+		w.offHeap = offHeap
+		w.GetNulls().InitWith(v.GetNulls())
+		w.GetGrouping().InitWith(v.GetGrouping())
+		return w, nil
+	}
+
+	var err error
+
+	w := NewVecFromReuse()
+	w.class = v.class
+	w.typ = v.typ
+	w.length = v.length
+	w.sorted = v.sorted
+	w.isBin = v.isBin
+	w.offHeap = offHeap
+	w.GetNulls().InitWith(v.GetNulls())
+	w.GetGrouping().InitWith(v.GetGrouping())
+
+	dataLen := v.typ.TypeSize()
+	if v.IsConst() {
+		if err := extend(w, 1, mp); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := extend(w, v.length, mp); err != nil {
+			return nil, err
+		}
+		dataLen *= v.length
+	}
+	copy(w.data, v.data[:dataLen])
+
+	if len(v.area) > 0 {
+		if w.area, err = mp.Alloc(len(v.area), offHeap); err != nil {
+			return nil, err
+		}
+		copy(w.area, v.area)
+	}
+	return w, nil
+}
+
 // Shrink use to shrink vectors, sels must be guaranteed to be ordered
 func (v *Vector) Shrink(sels []int64, negate bool) {
 

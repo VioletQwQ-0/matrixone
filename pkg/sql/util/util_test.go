@@ -15,11 +15,19 @@
 package util
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
+	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/nulls"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
+	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
+	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,6 +36,66 @@ type kase struct {
 	b       string
 	want    string
 	wantErr bool
+}
+
+func TestCopyBatchUsesOffHeapDeepCopy(t *testing.T) {
+	mp := mpool.MustNewZero()
+	proc := process.NewTopProcess(
+		context.Background(),
+		mp,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	src := batch.NewWithSize(2)
+	src.Attrs = []string{"c1", "c2"}
+
+	strVec := vector.NewVec(types.T_varchar.ToType())
+	longValue := strings.Repeat("a", types.VarlenaInlineSize+8)
+	otherValue := strings.Repeat("b", types.VarlenaInlineSize+16)
+	require.NoError(t, vector.AppendBytes(strVec, []byte(longValue), false, mp))
+	require.NoError(t, vector.AppendBytes(strVec, nil, true, mp))
+	require.NoError(t, vector.AppendBytes(strVec, []byte(otherValue), false, mp))
+
+	var grouping nulls.Nulls
+	grouping.Add(2)
+	strVec.SetGrouping(&grouping)
+	strVec.SetSorted(true)
+
+	intVec := vector.NewVec(types.T_int64.ToType())
+	require.NoError(t, vector.AppendFixed[int64](intVec, 10, false, mp))
+	require.NoError(t, vector.AppendFixed[int64](intVec, 20, false, mp))
+	require.NoError(t, vector.AppendFixed[int64](intVec, 30, false, mp))
+
+	src.SetVector(0, strVec)
+	src.SetVector(1, intVec)
+	src.SetRowCount(3)
+
+	dst, err := CopyBatch(src, proc)
+	require.NoError(t, err)
+	require.Greater(t, mp.CurrNB(), int64(0))
+	require.Equal(t, src.Attrs, dst.Attrs)
+	require.Equal(t, src.RowCount(), dst.RowCount())
+	require.Equal(t, longValue, string(dst.Vecs[0].GetBytesAt(0)))
+	require.True(t, dst.Vecs[0].IsNull(1))
+	require.Equal(t, otherValue, string(dst.Vecs[0].GetBytesAt(2)))
+	require.True(t, dst.Vecs[0].GetGrouping().Contains(2))
+	require.True(t, dst.Vecs[0].GetSorted())
+
+	copiedValue := string(dst.Vecs[0].GetBytesAt(0))
+	strVec.GetArea()[0] = 'z'
+	require.Equal(t, copiedValue, string(dst.Vecs[0].GetBytesAt(0)))
+
+	dst.Clean(mp)
+	src.Clean(mp)
+	require.Equal(t, int64(0), mp.CurrNB())
 }
 
 func Test_MakeNameOfPartitionTable(t *testing.T) {
