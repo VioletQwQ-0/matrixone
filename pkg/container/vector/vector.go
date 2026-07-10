@@ -1010,6 +1010,65 @@ func (v *Vector) Dup(mp *mpool.MPool) (*Vector, error) {
 	return w, nil
 }
 
+// DupToFlat deep-copies a vector into Go-managed buffers and normalizes the
+// result to the flat representation used by write batches.
+func (v *Vector) DupToFlat(mp *mpool.MPool) (*Vector, error) {
+	if v.IsConst() {
+		w := NewVec(v.typ)
+		if err := GetUnionAllFunction(v.typ, mp)(w, v); err != nil {
+			w.Free(mp)
+			return nil, err
+		}
+		return w, nil
+	}
+	// Keep CopyBatch's existing rejection behavior for vector types that do not
+	// have a UnionAll implementation.
+	switch v.typ.Oid {
+	case types.T_any, types.T_star, types.T_int128, types.T_uint128,
+		types.T_interval, types.T_Objectid, types.T_tuple:
+		GetUnionAllFunction(v.typ, mp)
+	}
+
+	w := NewVecFromReuse()
+	w.typ = v.typ
+	w.length = v.length
+	if v.nsp.Any() {
+		for row := uint64(0); row < uint64(v.length); row++ {
+			if v.nsp.Contains(row) {
+				w.nsp.Add(row)
+			}
+		}
+	}
+	if v.gsp.Any() {
+		for row := uint64(0); row < uint64(v.length); row++ {
+			if v.gsp.Contains(row) {
+				w.gsp.Add(row)
+			}
+		}
+	}
+
+	dataLen := v.typ.TypeSize() * v.length
+	if dataLen > 0 {
+		var err error
+		w.data, err = mp.Alloc(dataLen, false)
+		if err != nil {
+			return nil, err
+		}
+		copy(w.data, v.data[:dataLen])
+	}
+
+	if len(v.area) > 0 {
+		var err error
+		w.area, err = mp.Alloc(len(v.area), false)
+		if err != nil {
+			w.Free(mp)
+			return nil, err
+		}
+		copy(w.area, v.area)
+	}
+	return w, nil
+}
+
 // Shrink use to shrink vectors, sels must be guaranteed to be ordered
 func (v *Vector) Shrink(sels []int64, negate bool) {
 
