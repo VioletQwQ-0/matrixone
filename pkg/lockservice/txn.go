@@ -32,6 +32,10 @@ var (
 	parallelUnlockTables = 2
 )
 
+const maxParallelUnlockWorkers = 4
+
+type unlockTaskSubmitter func(func()) error
+
 type tableLockHolder struct {
 	tableKeys  map[uint64]*cowSlice
 	tableBinds map[uint64]pb.LockTable
@@ -149,11 +153,37 @@ func (txn *activeTxn) lockTableBindTouched(bind pb.LockTable) {
 	}
 }
 
+func (txn *activeTxn) heldLockTableCount() int {
+	n := 0
+	for _, h := range txn.lockHolders {
+		n += len(h.tableKeys)
+	}
+	return n
+}
+
 func (txn *activeTxn) close(
 	txnID []byte,
 	commitTS timestamp.Timestamp,
 	lockTableFunc func(uint32, uint64) (lockTable, error),
 	logger *log.MOLogger,
+	mutations ...pb.ExtraMutation,
+) error {
+	return txn.closeWithTaskSubmitter(
+		txnID,
+		commitTS,
+		lockTableFunc,
+		logger,
+		ants.Submit,
+		mutations...,
+	)
+}
+
+func (txn *activeTxn) closeWithTaskSubmitter(
+	txnID []byte,
+	commitTS timestamp.Timestamp,
+	lockTableFunc func(uint32, uint64) (lockTable, error),
+	logger *log.MOLogger,
+	submit unlockTaskSubmitter,
 	mutations ...pb.ExtraMutation,
 ) error {
 	logTxnReadyToClose(logger, txn)
@@ -171,8 +201,66 @@ func (txn *activeTxn) close(
 		return false
 	}
 
-	n := len(txn.lockHolders)
+	n := txn.heldLockTableCount()
 	var wg sync.WaitGroup
+	var panicOnce sync.Once
+	var panicValue any
+	parallel := n > parallelUnlockTables
+	submitDisabled := false
+	var tasks [maxParallelUnlockWorkers]func()
+	taskCount := 0
+	recordPanic := func(v any) {
+		panicOnce.Do(func() {
+			panicValue = v
+		})
+	}
+	runTask := func(fn func()) {
+		defer func() {
+			if v := recover(); v != nil {
+				recordPanic(v)
+			}
+		}()
+		fn()
+	}
+	runBatch := func() {
+		if taskCount == 0 {
+			return
+		}
+		if taskCount == 1 {
+			task := tasks[0]
+			tasks[0] = nil
+			taskCount = 0
+			task()
+			return
+		}
+
+		for i := 0; i < taskCount-1; i++ {
+			task := tasks[i]
+			if !submitDisabled {
+				wg.Add(1)
+				err := submit(func() {
+					defer wg.Done()
+					runTask(task)
+				})
+				if err == nil {
+					continue
+				}
+				wg.Done()
+				submitDisabled = true
+			}
+			runTask(task)
+		}
+		runTask(tasks[taskCount-1])
+		wg.Wait()
+		for i := 0; i < taskCount; i++ {
+			tasks[i] = nil
+		}
+		taskCount = 0
+		if panicValue != nil {
+			panic(panicValue)
+		}
+	}
+
 	v2.TxnUnlockTableTotalHistogram.Observe(float64(n))
 	for group, h := range txn.lockHolders {
 		for table, cs := range h.tableKeys {
@@ -183,6 +271,9 @@ func (txn *activeTxn) close(
 				//
 				// or a local transaction holds a lock on remote lock table, but can not get the remote
 				// LockTable, it is a bug.
+				if parallel {
+					runBatch()
+				}
 				panic(err)
 			}
 			if l == nil || canSkipTable(isRemoteTable, l) {
@@ -203,23 +294,24 @@ func (txn *activeTxn) close(
 						table,
 						cs,
 					)
-					if n > parallelUnlockTables {
-						wg.Done()
-					}
 				}
 			}
 
-			if n > parallelUnlockTables {
-				wg.Add(1)
-				ants.Submit(fn(table, cs, l))
-			} else {
-				fn(table, cs, l)()
+			task := fn(table, cs, l)
+			if !parallel {
+				task()
+				continue
+			}
+			tasks[taskCount] = task
+			taskCount++
+			if taskCount == len(tasks) {
+				runBatch()
 			}
 		}
 	}
 
-	if n > parallelUnlockTables {
-		wg.Wait()
+	if parallel {
+		runBatch()
 	}
 
 	reuse.Free(txn, nil)
