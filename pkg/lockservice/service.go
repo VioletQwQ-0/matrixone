@@ -1053,23 +1053,35 @@ type activeTxnHolder interface {
 	isValidRemoteTxn(pb.WaitTxn) bool
 }
 
+const activeTxnHolderShards = 16
+
+type activeTxnEntry struct {
+	txn           *activeTxn
+	remoteService string
+}
+
+type activeTxnShard struct {
+	sync.RWMutex
+	txns map[string]activeTxnEntry
+}
+
 type mapBasedTxnHolder struct {
-	serviceID string
-	logger    *log.MOLogger
-	fsp       *fixedSlicePool
-	validTxn  func(txn pb.WaitTxn) (bool, error)
-	valid     func(sid string) (bool, error)
-	notify    func([]pb.OrphanTxn) (pb.CannotCommitResponse, error)
-	mu        struct {
+	serviceID      string
+	logger         *log.MOLogger
+	fsp            *fixedSlicePool
+	validTxn       func(txn pb.WaitTxn) (bool, error)
+	valid          func(sid string) (bool, error)
+	notify         func([]pb.OrphanTxn) (pb.CannotCommitResponse, error)
+	activeTxnCount atomic.Int64
+	activeTxns     [activeTxnHolderShards]activeTxnShard
+	mu             struct {
 		sync.RWMutex
 		// remoteServices known remote service
 		remoteServices map[string]*list.Element[remote]
 		// remoteLockBinds records the last heartbeat seen for a specific remote service + bind.
 		remoteLockBinds map[string]time.Time
 		// head(oldest) -> tail (newest)
-		dequeue           list.Deque[remote]
-		activeTxns        map[string]*activeTxn
-		activeTxnServices map[string]string
+		dequeue list.Deque[remote]
 	}
 }
 
@@ -1088,19 +1100,22 @@ func newMapBasedTxnHandler(
 	h.notify = notify
 	h.validTxn = validTxn
 	h.serviceID = serviceID
-	h.mu.activeTxns = make(map[string]*activeTxn, 1024)
-	h.mu.activeTxnServices = make(map[string]string)
+	for i := range h.activeTxns {
+		h.activeTxns[i].txns = make(map[string]activeTxnEntry, 64)
+	}
 	h.mu.remoteServices = make(map[string]*list.Element[remote])
 	h.mu.remoteLockBinds = make(map[string]time.Time)
 	h.mu.dequeue = list.New[remote]()
 	return h
 }
 
-func (h *mapBasedTxnHolder) getActiveLocked(txnKey string) *activeTxn {
-	if v, ok := h.mu.activeTxns[txnKey]; ok {
-		return v
+func (h *mapBasedTxnHolder) getActiveTxnShard(txnKey string) *activeTxnShard {
+	hash := uint32(2166136261)
+	for i := 0; i < len(txnKey); i++ {
+		hash ^= uint32(txnKey[i])
+		hash *= 16777619
 	}
-	return nil
+	return &h.activeTxns[hash%activeTxnHolderShards]
 }
 
 func (h *mapBasedTxnHolder) getActiveTxn(
@@ -1109,89 +1124,95 @@ func (h *mapBasedTxnHolder) getActiveTxn(
 	remoteService string,
 ) *activeTxn {
 	txnKey := util.UnsafeBytesToString(txnID)
-	h.mu.RLock()
-	v := h.getActiveLocked(txnKey)
-	if v != nil {
-		h.mu.RUnlock()
-		return v
+	shard := h.getActiveTxnShard(txnKey)
+	shard.RLock()
+	entry, ok := shard.txns[txnKey]
+	shard.RUnlock()
+	if ok {
+		return entry.txn
 	}
-	h.mu.RUnlock()
 	if !create {
 		return nil
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if v := h.getActiveLocked(txnKey); v != nil {
-		return v
+	shard.Lock()
+	defer shard.Unlock()
+	if entry, ok := shard.txns[txnKey]; ok {
+		return entry.txn
 	}
 
 	txn := newActiveTxn(txnID, txnKey, h.fsp, remoteService)
-	h.mu.activeTxns[txnKey] = txn
-	h.mu.activeTxnServices[txnKey] = txn.remoteService
-
 	if remoteService != "" {
-		if _, ok := h.mu.remoteServices[remoteService]; !ok {
+		h.mu.Lock()
+		if e, ok := h.mu.remoteServices[remoteService]; ok {
+			e.Value.time = time.Now()
+			e.Value.version++
+			h.mu.dequeue.MoveToBack(e)
+		} else {
 			h.mu.remoteServices[remoteService] = h.mu.dequeue.PushBack(remote{
-				id:   remoteService,
-				time: time.Now(),
+				id:      remoteService,
+				time:    time.Now(),
+				version: 1,
 			})
-
 		}
+		h.mu.Unlock()
 	}
+	shard.txns[txnKey] = activeTxnEntry{txn: txn, remoteService: remoteService}
+	h.activeTxnCount.Add(1)
 	logTxnCreated(h.logger, txn)
 	return txn
 }
 
 func (h *mapBasedTxnHolder) hasActiveTxn(txnID []byte) bool {
 	txnKey := util.UnsafeBytesToString(txnID)
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if v := h.getActiveLocked(txnKey); v != nil {
-		return true
-	}
-	return false
+	shard := h.getActiveTxnShard(txnKey)
+	shard.RLock()
+	_, ok := shard.txns[txnKey]
+	shard.RUnlock()
+	return ok
 }
 
 func (h *mapBasedTxnHolder) empty() bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return len(h.mu.activeTxns) == 0
+	return h.activeTxnCount.Load() == 0
 }
 
 func (h *mapBasedTxnHolder) getAllTxnID() [][]byte {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	txns := make([][]byte, len(h.mu.activeTxns))
-	i := 0
-	for k := range h.mu.activeTxns {
-		txns[i] = util.UnsafeStringToBytes(k)
-		i++
+	txns := make([][]byte, 0, h.activeTxnCount.Load())
+	for i := range h.activeTxns {
+		shard := &h.activeTxns[i]
+		shard.RLock()
+		for txnKey := range shard.txns {
+			txns = append(txns, []byte(txnKey))
+		}
+		shard.RUnlock()
 	}
 	return txns
 }
 
 func (h *mapBasedTxnHolder) deleteActiveTxn(txnID []byte) *activeTxn {
 	txnKey := util.UnsafeBytesToString(txnID)
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	v, ok := h.mu.activeTxns[txnKey]
+	shard := h.getActiveTxnShard(txnKey)
+	shard.Lock()
+	entry, ok := shard.txns[txnKey]
 	if ok {
-		delete(h.mu.activeTxns, txnKey)
-		delete(h.mu.activeTxnServices, txnKey)
+		delete(shard.txns, txnKey)
+		h.activeTxnCount.Add(-1)
 	}
-	return v
+	shard.Unlock()
+	return entry.txn
 }
 
 func (h *mapBasedTxnHolder) fenceByBindChanged(bind pb.LockTable) int {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
 	n := 0
-	for _, txn := range h.mu.activeTxns {
-		if txn.fenceByBindChanged(bind, h.logger) {
-			n++
+	for i := range h.activeTxns {
+		shard := &h.activeTxns[i]
+		shard.RLock()
+		for _, entry := range shard.txns {
+			if entry.txn.fenceByBindChanged(bind, h.logger) {
+				n++
+			}
 		}
+		shard.RUnlock()
 	}
 	return n
 }
@@ -1201,6 +1222,7 @@ func (h *mapBasedTxnHolder) keepRemoteActiveTxn(remoteService string) {
 	defer h.mu.Unlock()
 	if e, ok := h.mu.remoteServices[remoteService]; ok {
 		e.Value.time = time.Now()
+		e.Value.version++
 		h.mu.dequeue.MoveToBack(e)
 	}
 }
@@ -1240,6 +1262,7 @@ func (h *mapBasedTxnHolder) getTimeoutRemoveTxn(
 	for k := range timeoutServices {
 		delete(timeoutServices, k)
 	}
+	timeoutVersions := make(map[string]uint64)
 	h.mu.Lock()
 	now := time.Now()
 	for key, lastSeen := range h.mu.remoteLockBinds {
@@ -1252,87 +1275,87 @@ func (h *mapBasedTxnHolder) getTimeoutRemoveTxn(
 		if v < maxKeepInterval {
 			return false
 		}
-		timeoutServices[r.id] = struct{}{}
+		timeoutVersions[r.id] = r.version
 		return true
 	})
 	h.mu.Unlock()
 
 	var cannotCommit []pb.OrphanTxn
 	cannotCommitServices := make(map[string]int)
-	for sid := range timeoutServices {
+	for sid, version := range timeoutVersions {
 		// skip maybe valid services
 		if ok, err := h.valid(sid); ok && err == nil {
-			delete(timeoutServices, sid)
-		} else {
-			// any error will be considered the txn cannot commit.
-			delete(timeoutServices, sid)
-			cannotCommit = append(cannotCommit, pb.OrphanTxn{Service: sid})
-			cannotCommitServices[sid] = len(cannotCommit) - 1
-		}
-	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	// all txns in the timeout services need to be removed
-	for txnKey := range h.mu.activeTxns {
-		remoteService := h.mu.activeTxnServices[txnKey]
-
-		if idx, ok := cannotCommitServices[remoteService]; ok {
-			cannotCommit[idx].Txn = append(cannotCommit[idx].Txn, util.UnsafeStringToBytes(txnKey))
 			continue
 		}
 
-		if _, ok := timeoutServices[remoteService]; ok {
-			needRemoved = append(needRemoved, util.UnsafeStringToBytes(txnKey))
+		// The validity check is outside the lock. Drop a stale result if a
+		// heartbeat refreshed this service while the check was in flight.
+		h.mu.RLock()
+		e, ok := h.mu.remoteServices[sid]
+		stillTimedOut := ok && e.Value.version == version &&
+			time.Since(e.Value.time) >= maxKeepInterval
+		h.mu.RUnlock()
+		if !stillTimedOut {
+			continue
 		}
-	}
-	h.mu.Unlock()
 
-	if len(cannotCommit) > 0 {
-		// found txn1 cannot commit, but txn1 is still running in other cn.
-		// There are 2 possible timings here:
-		// 1. txn1's commit request arrive TN before cannot commit request
-		// 2. txn1's commit request arrive TN after cannot commit request
-		//
-		// In case1: we cannot make txn1 as timeout txn.
-		// In case2: txn1'commit request will failed, and we can make txn1 as
-		//           timeout txn.
-		if committing, err := h.notify(cannotCommit); err == nil {
-			if !committing.FenceTS.IsEmpty() {
-				committingTxns := committing.CommittingTxn
-				for sid, idx := range cannotCommitServices {
-					if len(committingTxns) == 0 {
-						needRemoved = append(needRemoved, cannotCommit[idx].Txn...)
-						for _, txn := range cannotCommit[idx].Txn {
-							fenceTSByTxn[util.UnsafeBytesToString(txn)] = committing.FenceTS
-						}
-						timeoutServices[sid] = struct{}{}
-					} else {
-						m := make(map[string]struct{}, len(committingTxns))
-						for _, v := range committingTxns {
-							m[util.UnsafeBytesToString(v)] = struct{}{}
-						}
-						for _, v := range cannotCommit[idx].Txn {
-							if _, ok := m[util.UnsafeBytesToString(v)]; !ok {
-								needRemoved = append(needRemoved, v)
-								fenceTSByTxn[util.UnsafeBytesToString(v)] = committing.FenceTS
-							}
-						}
-					}
-				}
+		// Any error will be considered the txn cannot commit.
+		cannotCommit = append(cannotCommit, pb.OrphanTxn{Service: sid})
+		cannotCommitServices[sid] = len(cannotCommit) - 1
+	}
+
+	for i := range h.activeTxns {
+		shard := &h.activeTxns[i]
+		shard.RLock()
+		for txnKey, entry := range shard.txns {
+			if idx, ok := cannotCommitServices[entry.remoteService]; ok {
+				cannotCommit[idx].Txn = append(cannotCommit[idx].Txn, []byte(txnKey))
 			}
 		}
+		shard.RUnlock()
 	}
 
-	// clear
+	if len(cannotCommit) == 0 {
+		return needRemoved
+	}
+
+	// Found txn1 cannot commit, but txn1 is still running in other cn.
+	// The allocator fence separates transactions already committing at TN
+	// from transactions that can be safely removed.
+	committing, err := h.notify(cannotCommit)
+	if err != nil || committing.FenceTS.IsEmpty() {
+		return needRemoved
+	}
+	committingTxns := make(map[string]struct{}, len(committing.CommittingTxn))
+	for _, txn := range committing.CommittingTxn {
+		committingTxns[util.UnsafeBytesToString(txn)] = struct{}{}
+	}
+
+	// Re-check the heartbeat generation before returning any txn for unlock.
+	// Otherwise a service that recovered while valid/notify ran could lose live
+	// transactions based on a stale timeout observation.
 	h.mu.Lock()
-	for k := range timeoutServices {
-		if e, ok := h.mu.remoteServices[k]; ok {
-			delete(h.mu.remoteServices, k)
+	now = time.Now()
+	for sid, idx := range cannotCommitServices {
+		e, ok := h.mu.remoteServices[sid]
+		if !ok || e.Value.version != timeoutVersions[sid] ||
+			now.Sub(e.Value.time) < maxKeepInterval {
+			continue
+		}
+		for _, txn := range cannotCommit[idx].Txn {
+			if _, ok := committingTxns[util.UnsafeBytesToString(txn)]; ok {
+				continue
+			}
+			needRemoved = append(needRemoved, txn)
+			fenceTSByTxn[util.UnsafeBytesToString(txn)] = committing.FenceTS
+		}
+		if len(committingTxns) == 0 {
+			timeoutServices[sid] = struct{}{}
+			delete(h.mu.remoteServices, sid)
 			h.mu.dequeue.Remove(e)
 		}
 	}
+	h.mu.Unlock()
 	return needRemoved
 }
 
@@ -1382,27 +1405,36 @@ func (h *mapBasedTxnHolder) canUnlockRemoteTxn(txn pb.WaitTxn) (bool, timestamp.
 }
 
 func (h *mapBasedTxnHolder) close() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	for k, txn := range h.mu.activeTxns {
-		reuse.Free(txn, nil)
-		delete(h.mu.activeTxns, k)
+	for i := range h.activeTxns {
+		h.activeTxns[i].Lock()
+	}
+	for i := range h.activeTxns {
+		for txnKey, entry := range h.activeTxns[i].txns {
+			reuse.Free(entry.txn, nil)
+			delete(h.activeTxns[i].txns, txnKey)
+		}
+	}
+	h.activeTxnCount.Store(0)
+	for i := len(h.activeTxns) - 1; i >= 0; i-- {
+		h.activeTxns[i].Unlock()
 	}
 }
 
 func (h *mapBasedTxnHolder) incLockTableRef(m map[uint32]map[uint64]uint64, serviceID string) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	for _, txn := range h.mu.activeTxns {
-		txn.incLockTableRef(m, serviceID)
+	for i := range h.activeTxns {
+		shard := &h.activeTxns[i]
+		shard.RLock()
+		for _, entry := range shard.txns {
+			entry.txn.incLockTableRef(m, serviceID)
+		}
+		shard.RUnlock()
 	}
 }
 
 type remote struct {
-	id   string
-	time time.Time
+	id      string
+	time    time.Time
+	version uint64
 }
 
 func getServiceIdentifier(id string, version int64) string {

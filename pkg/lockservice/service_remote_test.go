@@ -16,6 +16,8 @@ package lockservice
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -369,6 +371,77 @@ func TestGetActiveTxnWithRemote(t *testing.T) {
 		e := hold.mu.dequeue.PopFront()
 		assert.Equal(t, "s1", e.Value.id)
 		assert.True(t, e.Value.time.After(st))
+	})
+}
+
+func TestMapBasedTxnHolderConcurrentGetAndDelete(t *testing.T) {
+	hold := newMapBasedTxnHandler(
+		"s1",
+		getLogger(""),
+		newFixedSlicePool(16),
+		func(string) (bool, error) { return true, nil },
+		func([]pb.OrphanTxn) (pb.CannotCommitResponse, error) { return pb.CannotCommitResponse{}, nil },
+		func(pb.WaitTxn) (bool, error) { return true, nil },
+	).(*mapBasedTxnHolder)
+	defer hold.close()
+
+	const workers = 100
+	start := make(chan struct{})
+	results := make(chan *activeTxn, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- hold.getActiveTxn([]byte("same-txn"), true, "")
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	var first *activeTxn
+	for txn := range results {
+		if first == nil {
+			first = txn
+		}
+		require.Same(t, first, txn)
+	}
+	require.Equal(t, int64(1), hold.activeTxnCount.Load())
+
+	for i := range workers {
+		txnID := []byte(fmt.Sprintf("txn-%d", i))
+		require.NotNil(t, hold.getActiveTxn(txnID, true, ""))
+	}
+	require.Equal(t, int64(workers+1), hold.activeTxnCount.Load())
+	for i := range workers {
+		txnID := []byte(fmt.Sprintf("txn-%d", i))
+		txn := hold.deleteActiveTxn(txnID)
+		require.NotNil(t, txn)
+		reuse.Free(txn, nil)
+	}
+	require.Equal(t, int64(1), hold.activeTxnCount.Load())
+}
+
+func BenchmarkMapBasedTxnHolderConcurrent(b *testing.B) {
+	hold := newMapBasedTxnHandler(
+		"s1",
+		getLogger(""),
+		newFixedSlicePool(16),
+		func(string) (bool, error) { return true, nil },
+		func([]pb.OrphanTxn) (pb.CannotCommitResponse, error) { return pb.CannotCommitResponse{}, nil },
+		func(pb.WaitTxn) (bool, error) { return true, nil },
+	).(*mapBasedTxnHolder)
+	b.Cleanup(hold.close)
+
+	var next atomic.Uint64
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			txnID := []byte(fmt.Sprintf("txn-%d", next.Add(1)))
+			hold.getActiveTxn(txnID, true, "")
+			reuse.Free(hold.deleteActiveTxn(txnID), nil)
+		}
 	})
 }
 

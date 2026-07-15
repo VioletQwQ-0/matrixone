@@ -606,6 +606,56 @@ func TestGetTimeoutRemoveTxnWithValidErrorAndNotifyFailed(t *testing.T) {
 	hold.mu.RUnlock()
 }
 
+func TestGetTimeoutRemoveTxnDropsStaleValidityResultAfterRemoteActivity(t *testing.T) {
+	validStarted := make(chan struct{})
+	continueValid := make(chan struct{})
+	var notifyCalled atomic.Bool
+	hold := newMapBasedTxnHandler(
+		"s1",
+		getLogger(""),
+		newFixedSlicePool(16),
+		func(string) (bool, error) {
+			close(validStarted)
+			<-continueValid
+			return false, nil
+		},
+		func([]pb.OrphanTxn) (pb.CannotCommitResponse, error) {
+			notifyCalled.Store(true)
+			return pb.CannotCommitResponse{FenceTS: timestamp.Timestamp{PhysicalTime: 10}}, nil
+		},
+		func(pb.WaitTxn) (bool, error) { return true, nil },
+	).(*mapBasedTxnHolder)
+	defer hold.close()
+
+	txnID := []byte("txn1")
+	hold.getActiveTxn(txnID, true, "remote-s1")
+	hold.mu.Lock()
+	hold.mu.remoteServices["remote-s1"].Value.time = time.Now().Add(-10 * time.Second)
+	hold.mu.Unlock()
+
+	type result struct {
+		txns  [][]byte
+		fence map[string]timestamp.Timestamp
+	}
+	resultC := make(chan result, 1)
+	go func() {
+		fence := make(map[string]timestamp.Timestamp)
+		txns := hold.getTimeoutRemoveTxn(make(map[string]struct{}), nil, fence, time.Second)
+		resultC <- result{txns: txns, fence: fence}
+	}()
+
+	<-validStarted
+	hold.getActiveTxn([]byte("txn2"), true, "remote-s1")
+	close(continueValid)
+	got := <-resultC
+	require.Empty(t, got.txns)
+	require.Empty(t, got.fence)
+	require.False(t, notifyCalled.Load())
+	hold.mu.RLock()
+	require.Contains(t, hold.mu.remoteServices, "remote-s1")
+	hold.mu.RUnlock()
+}
+
 func TestCannotCommitTxnCanBeRemovedWithNotInActiveTxn(t *testing.T) {
 	var mu sync.Mutex
 	var actives [][]byte
