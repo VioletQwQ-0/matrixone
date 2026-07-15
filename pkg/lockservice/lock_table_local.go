@@ -33,8 +33,39 @@ import (
 )
 
 const (
-	eventsWorkers = 4
+	eventsWorkers               = 4
+	maxPooledLockReleaseActions = 1024
 )
+
+type lockReleaseAction struct {
+	lock         Lock
+	holdDuration float64
+}
+
+var lockReleaseActionsPool = sync.Pool{
+	New: func() any {
+		actions := make([]lockReleaseAction, 0, 16)
+		return &actions
+	},
+}
+
+func acquireLockReleaseActions(capacity int) *[]lockReleaseAction {
+	actions := lockReleaseActionsPool.Get().(*[]lockReleaseAction)
+	if cap(*actions) < capacity {
+		*actions = make([]lockReleaseAction, 0, capacity)
+	} else {
+		*actions = (*actions)[:0]
+	}
+	return actions
+}
+
+func releaseLockReleaseActions(actions *[]lockReleaseAction) {
+	clear(*actions)
+	if cap(*actions) <= maxPooledLockReleaseActions {
+		*actions = (*actions)[:0]
+		lockReleaseActionsPool.Put(actions)
+	}
+}
 
 // a localLockTable instance manages the locks on a table
 type localLockTable struct {
@@ -278,14 +309,7 @@ func (l *localLockTable) unlock(
 		v2.TxnUnlockBtreeTotalDurationHistogram.Observe(time.Since(start).Seconds())
 	}()
 
-	getMutation := func(key []byte) int {
-		for i := range mutations {
-			if bytes.Equal(mutations[i].Key, key) {
-				return i
-			}
-		}
-		return -1
-	}
+	mutationByKey := buildExtraMutationIndex(mutations)
 
 	logUnlockTableOnLocal(
 		l.logger,
@@ -296,86 +320,135 @@ func (l *localLockTable) unlock(
 	locks := ls.slice()
 	defer locks.unref()
 
-	l.mu.Lock()
-	v2.TxnUnlockBtreeGetLockDurationHistogram.Observe(time.Since(start).Seconds())
+	releasedRef := acquireLockReleaseActions(locks.len())
+	released := (*releasedRef)[:0]
+	defer func() {
+		*releasedRef = released
+		releaseLockReleaseActions(releasedRef)
+	}()
+	var lockWaitDuration float64
 
-	defer l.mu.Unlock()
-	if l.mu.closed {
-		return
-	}
+	func() {
+		l.mu.Lock()
+		lockWaitDuration = time.Since(start).Seconds()
+		defer l.mu.Unlock()
+		if l.mu.closed {
+			return
+		}
 
-	b, ok := txn.getHoldLocksLocked(l.bind.Group).tableBinds[l.bind.Table]
-	if !ok {
-		panic("BUG: missing bind")
-	}
+		b, ok := txn.getHoldLocksLocked(l.bind.Group).tableBinds[l.bind.Table]
+		if !ok {
+			panic("BUG: missing bind")
+		}
 
-	var startKey []byte
-	locks.iter(func(key []byte) bool {
-		if lock, ok := l.mu.store.Get(key); ok {
-			idx := getMutation(key)
-			if idx != -1 && mutations[idx].Skip {
-				return true
-			}
-
-			if lock.isLockRangeStart() {
-				startKey = key
-				return true
-			}
-
-			if !lock.holders.contains(txn.txnID) {
-				// 1. txn1 hold key1 on bind version 0
-				// 2. txn1 commit success
-				// 3. dn restart
-				// 4. txn2 hold key1 on bind version 1
-				// 5. txn1 unlock.
-				if b.Changed(l.bind) {
+		var startKey []byte
+		locks.iter(func(key []byte) bool {
+			if lock, ok := l.mu.store.Get(key); ok {
+				idx := findExtraMutation(mutations, mutationByKey, key)
+				if idx != -1 && mutations[idx].Skip {
 					return true
 				}
 
-				l.logger.Fatal("BUG: unlock a lock that is not held by the current txn",
-					zap.Bool("row", lock.isLockRow()),
-					zap.Int("keys-count", locks.len()),
-					zap.String("hold-bind", b.DebugString()),
-					zap.String("bind", l.bind.DebugString()),
-					waitTxnArrayField("holders", lock.holders.getTxnSlice()),
-					txnField(txn))
-			}
-			if len(startKey) > 0 && !lock.isLockRangeEnd() {
-				panic("BUG: missing range end key")
-			}
-
-			if idx != -1 {
-				replaceTo := mutations[idx].ReplaceTo
-				lock.holders.replace(txn.txnID,
-					pb.WaitTxn{TxnID: replaceTo, CreatedOn: txn.remoteService})
-				// cannot dead lock here, the replaceTo txn was created on the same cn.
-				replaceToTxn := l.txnHolder.getActiveTxn(mutations[idx].ReplaceTo, true, txn.remoteService)
-				replaceToTxn.Lock()
-				_ = replaceToTxn.lockAdded(l.bind.Group, l.bind, [][]byte{key}, l.logger)
-				replaceToTxn.Unlock()
-				return true
-			}
-
-			lockCanRemoved := lock.closeTxn(
-				txn,
-				notifyValue{ts: commitTS})
-			l.removeInactiveOwnerLocalWaitEdgesLocked(lock)
-			logLockUnlocked(l.logger, txn, key, lock)
-
-			if lockCanRemoved {
-				v2.TxnHoldLockDurationHistogram.Observe(time.Since(lock.createAt).Seconds())
-				l.mu.store.Delete(key)
-				if len(startKey) > 0 {
-					l.mu.store.Delete(startKey)
-					startKey = nil
+				if lock.isLockRangeStart() {
+					startKey = key
+					return true
 				}
-				lock.release()
+
+				if !lock.holders.contains(txn.txnID) {
+					// 1. txn1 hold key1 on bind version 0
+					// 2. txn1 commit success
+					// 3. dn restart
+					// 4. txn2 hold key1 on bind version 1
+					// 5. txn1 unlock.
+					if b.Changed(l.bind) {
+						return true
+					}
+
+					l.logger.Fatal("BUG: unlock a lock that is not held by the current txn",
+						zap.Bool("row", lock.isLockRow()),
+						zap.Int("keys-count", locks.len()),
+						zap.String("hold-bind", b.DebugString()),
+						zap.String("bind", l.bind.DebugString()),
+						waitTxnArrayField("holders", lock.holders.getTxnSlice()),
+						txnField(txn))
+				}
+				if len(startKey) > 0 && !lock.isLockRangeEnd() {
+					panic("BUG: missing range end key")
+				}
+
+				if idx != -1 {
+					replaceTo := mutations[idx].ReplaceTo
+					lock.holders.replace(txn.txnID,
+						pb.WaitTxn{TxnID: replaceTo, CreatedOn: txn.remoteService})
+					// cannot dead lock here, the replaceTo txn was created on the same cn.
+					replaceToTxn := l.txnHolder.getActiveTxn(mutations[idx].ReplaceTo, true, txn.remoteService)
+					replaceToTxn.Lock()
+					_ = replaceToTxn.lockAdded(l.bind.Group, l.bind, [][]byte{key}, l.logger)
+					replaceToTxn.Unlock()
+					return true
+				}
+
+				lockCanRemoved := lock.closeTxn(
+					txn,
+					notifyValue{ts: commitTS})
+				l.removeInactiveOwnerLocalWaitEdgesLocked(lock)
+				logLockUnlocked(l.logger, txn, key, lock)
+
+				if lockCanRemoved {
+					l.mu.store.Delete(key)
+					if len(startKey) > 0 {
+						l.mu.store.Delete(startKey)
+						startKey = nil
+					}
+					released = append(released, lockReleaseAction{
+						lock:         lock,
+						holdDuration: time.Since(lock.createAt).Seconds(),
+					})
+				}
 			}
+			return true
+		})
+		if l.mu.tableCommittedAt.Less(commitTS) {
+			l.mu.tableCommittedAt = commitTS
 		}
-		return true
-	})
-	if l.mu.tableCommittedAt.Less(commitTS) {
-		l.mu.tableCommittedAt = commitTS
+	}()
+
+	v2.TxnUnlockBtreeGetLockDurationHistogram.Observe(lockWaitDuration)
+	for _, item := range released {
+		v2.TxnHoldLockDurationHistogram.Observe(item.holdDuration)
+		item.lock.release()
+	}
+}
+
+func buildExtraMutationIndex(mutations []pb.ExtraMutation) map[string]int {
+	if len(mutations) <= 1 {
+		return nil
+	}
+	byKey := make(map[string]int, len(mutations))
+	for i := range mutations {
+		key := string(mutations[i].Key)
+		if _, ok := byKey[key]; !ok {
+			byKey[key] = i
+		}
+	}
+	return byKey
+}
+
+func findExtraMutation(mutations []pb.ExtraMutation, byKey map[string]int, key []byte) int {
+	switch len(mutations) {
+	case 0:
+		return -1
+	case 1:
+		if bytes.Equal(mutations[0].Key, key) {
+			return 0
+		}
+		return -1
+	default:
+		idx, ok := byKey[string(key)]
+		if ok {
+			return idx
+		}
+		return -1
 	}
 }
 
@@ -449,8 +522,7 @@ func (l *localLockTable) doAcquireLock(c *lockContext) error {
 	case pb.Granularity_Row:
 		return l.acquireRowLockLocked(c)
 	case pb.Granularity_Range:
-		if len(c.rows) == 0 ||
-			len(c.rows)%2 != 0 {
+		if len(c.rows) == 0 || len(c.rows)%2 != 0 {
 			panic("invalid range lock")
 		}
 		return l.acquireRangeLockLocked(c)
