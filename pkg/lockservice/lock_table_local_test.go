@@ -35,6 +35,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestExtraMutationLookupPreservesFirstMatch(t *testing.T) {
+	mutations := []pb.ExtraMutation{
+		{Key: []byte("a"), Skip: true},
+		{Key: []byte("b")},
+		{Key: []byte("a")},
+	}
+	index := buildExtraMutationIndex(mutations)
+	require.Equal(t, 0, findExtraMutation(mutations, index, []byte("a")))
+	require.Equal(t, 1, findExtraMutation(mutations, index, []byte("b")))
+	require.Equal(t, -1, findExtraMutation(mutations, index, []byte("c")))
+	require.Equal(t, -1, findExtraMutation(nil, nil, []byte("a")))
+	require.Equal(t, 0, findExtraMutation(mutations[:1], nil, []byte("a")))
+}
+
 func TestCloseLocalLockTable(t *testing.T) {
 	table := uint64(10)
 	getRunner(false)(
