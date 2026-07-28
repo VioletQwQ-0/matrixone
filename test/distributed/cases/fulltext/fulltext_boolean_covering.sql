@@ -1,0 +1,67 @@
+-- Strict Boolean-AND filter-only queries use the bounded covering path for a
+-- synchronous, single-column-primary-key fulltext index. The outer ORDER BY
+-- makes the tied Top-K results deterministic for BVT comparison.
+
+set ft_relevancy_algorithm = 'TF-IDF';
+
+drop database if exists fulltext_boolean_covering;
+create database fulltext_boolean_covering;
+use fulltext_boolean_covering;
+
+create table docs (id bigint primary key, body text);
+insert into docs values
+(1, 'matrix origin'),
+(2, 'matrix only'),
+(3, 'origin only'),
+(4, 'matrix origin extra');
+create fulltext index ft_docs on docs (body) with parser gojieba;
+
+select id from (
+    select id from docs
+    where match(body) against('+matrix +origin' in boolean mode)
+    limit 100
+) q order by id;
+
+insert into docs values (5, 'matrix origin inserted');
+select id from (
+    select id from docs
+    where match(body) against('+matrix +origin' in boolean mode)
+    limit 100
+) q order by id;
+
+update docs set body = 'updated without required terms' where id = 5;
+select id from (
+    select id from docs
+    where match(body) against('+matrix +origin' in boolean mode)
+    limit 100
+) q order by id;
+
+begin;
+insert into docs values (6, 'matrix origin transaction');
+select id from (
+    select id from docs
+    where match(body) against('+matrix +origin' in boolean mode)
+    limit 100
+) q order by id;
+delete from docs where id = 1;
+select id from (
+    select id from docs
+    where match(body) against('+matrix +origin' in boolean mode)
+    limit 100
+) q order by id;
+rollback;
+
+select id from (
+    select id from docs
+    where match(body) against('+matrix +origin' in boolean mode)
+    limit 100
+) q order by id;
+
+delete from docs where id = 4;
+select id from (
+    select id from docs
+    where match(body) against('+matrix +origin' in boolean mode)
+    limit 100
+) q order by id;
+
+drop database fulltext_boolean_covering;

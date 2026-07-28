@@ -1446,6 +1446,112 @@ func TestFullTextProjectionMarksBoundedFilterOnlyScan(t *testing.T) {
 	var params fulltext.FullTextParserParam
 	require.NoError(t, json.Unmarshal(functions[0].TableDef.TblFunc.Param, &params))
 	require.True(t, params.FilterOnly)
+
+	sortNode := builder.qry.Nodes[project.Children[0]]
+	require.Equal(t, planpb.Node_SORT, sortNode.NodeType)
+	require.Equal(t, functions[0].NodeId, sortNode.Children[0])
+	require.Equal(t, functions[0].BindingTags[0], project.ProjectList[0].GetCol().RelPos)
+	require.Equal(t, int32(0), project.ProjectList[0].GetCol().ColPos)
+	require.Equal(t, "id", project.ProjectList[0].GetCol().Name)
+	require.Equal(t, tableDef.Cols[0].Typ, project.ProjectList[0].Typ)
+}
+
+func TestFullTextProjectionKeepsBaseJoinForNonPKColumn(t *testing.T) {
+	builder := NewQueryBuilder(planpb.Query_SELECT, newFullTextJoinMockCompilerContext(), false, true)
+	ctx := NewBindContext(builder, nil)
+	tableDef := makeFullTextJoinTestTableDef("docs", true)
+	tag := builder.genNewBindTag()
+	match := makeFullTextMatchExpr("+Matrix +Origin", int64(tree.FULLTEXT_BOOLEAN), tableDef, tag, []int32{2, 3})
+	scanID := builder.appendNode(makeFullTextJoinTestScan(tableDef, tag, []*planpb.Expr{match}), ctx)
+	projectID := builder.appendNode(&planpb.Node{
+		NodeType:    planpb.Node_PROJECT,
+		Children:    []int32{scanID},
+		ProjectList: []*planpb.Expr{ftjColExpr(tableDef, tag, 3)},
+		Limit:       makePlan2Uint64ConstExprWithType(100),
+	}, ctx)
+	project := builder.qry.Nodes[projectID]
+	scan := builder.qry.Nodes[scanID]
+	filterIDs, indexDefs := builder.getFullTextMatchFiltersFromScanNode(scan)
+
+	_, err := builder.applyIndicesForProjectionUsingFullTextIndex(
+		projectID, project, nil, scan, filterIDs, indexDefs, nil, nil,
+		map[[2]int32]int{}, map[[2]int32]*planpb.Expr{},
+	)
+	require.NoError(t, err)
+
+	sortNode := builder.qry.Nodes[project.Children[0]]
+	require.Equal(t, planpb.Node_SORT, sortNode.NodeType)
+	require.Equal(t, planpb.Node_JOIN, builder.qry.Nodes[sortNode.Children[0]].NodeType)
+	require.Equal(t, tag, project.ProjectList[0].GetCol().RelPos)
+}
+
+func TestFullTextProjectionKeepsBaseJoinWhenScoreIsVisible(t *testing.T) {
+	builder := NewQueryBuilder(planpb.Query_SELECT, newFullTextJoinMockCompilerContext(), false, true)
+	ctx := NewBindContext(builder, nil)
+	tableDef := makeFullTextJoinTestTableDef("docs", true)
+	tag := builder.genNewBindTag()
+	match := makeFullTextMatchExpr("+Matrix +Origin", int64(tree.FULLTEXT_BOOLEAN), tableDef, tag, []int32{2, 3})
+	scanID := builder.appendNode(makeFullTextJoinTestScan(tableDef, tag, []*planpb.Expr{match}), ctx)
+	projectID := builder.appendNode(&planpb.Node{
+		NodeType:    planpb.Node_PROJECT,
+		Children:    []int32{scanID},
+		ProjectList: []*planpb.Expr{ftjColExpr(tableDef, tag, 0), DeepCopyExpr(match)},
+		Limit:       makePlan2Uint64ConstExprWithType(100),
+	}, ctx)
+	project := builder.qry.Nodes[projectID]
+	scan := builder.qry.Nodes[scanID]
+	filterIDs, filterIndexDefs := builder.getFullTextMatchFiltersFromScanNode(scan)
+	projectIDs, projectIndexDefs := builder.getFullTextMatchFromProject(project, scan)
+
+	_, err := builder.applyIndicesForProjectionUsingFullTextIndex(
+		projectID, project, nil, scan,
+		filterIDs, filterIndexDefs, projectIDs, projectIndexDefs,
+		map[[2]int32]int{}, map[[2]int32]*planpb.Expr{},
+	)
+	require.NoError(t, err)
+
+	functions := collectFullTextFunctionScans(builder, projectID)
+	require.Len(t, functions, 1)
+	var params fulltext.FullTextParserParam
+	if len(functions[0].TableDef.TblFunc.Param) > 0 {
+		require.NoError(t, json.Unmarshal(functions[0].TableDef.TblFunc.Param, &params))
+	}
+	require.False(t, params.FilterOnly)
+	sortNode := builder.qry.Nodes[project.Children[0]]
+	require.Equal(t, planpb.Node_JOIN, builder.qry.Nodes[sortNode.Children[0]].NodeType)
+}
+
+func TestFullTextProjectionKeepsBaseJoinForAsyncIndex(t *testing.T) {
+	builder := NewQueryBuilder(planpb.Query_SELECT, newFullTextJoinMockCompilerContext(), false, true)
+	ctx := NewBindContext(builder, nil)
+	tableDef := makeFullTextJoinTestTableDef("docs", true)
+	tableDef.Indexes[0].IndexAlgoParams = `{"async":"true"}`
+	tag := builder.genNewBindTag()
+	match := makeFullTextMatchExpr("+Matrix +Origin", int64(tree.FULLTEXT_BOOLEAN), tableDef, tag, []int32{2, 3})
+	scanID := builder.appendNode(makeFullTextJoinTestScan(tableDef, tag, []*planpb.Expr{match}), ctx)
+	projectID := builder.appendNode(&planpb.Node{
+		NodeType:    planpb.Node_PROJECT,
+		Children:    []int32{scanID},
+		ProjectList: []*planpb.Expr{ftjColExpr(tableDef, tag, 0)},
+		Limit:       makePlan2Uint64ConstExprWithType(100),
+	}, ctx)
+	project := builder.qry.Nodes[projectID]
+	scan := builder.qry.Nodes[scanID]
+	filterIDs, indexDefs := builder.getFullTextMatchFiltersFromScanNode(scan)
+
+	_, err := builder.applyIndicesForProjectionUsingFullTextIndex(
+		projectID, project, nil, scan, filterIDs, indexDefs, nil, nil,
+		map[[2]int32]int{}, map[[2]int32]*planpb.Expr{},
+	)
+	require.NoError(t, err)
+
+	functions := collectFullTextFunctionScans(builder, projectID)
+	require.Len(t, functions, 1)
+	var params fulltext.FullTextParserParam
+	require.NoError(t, json.Unmarshal(functions[0].TableDef.TblFunc.Param, &params))
+	require.False(t, params.FilterOnly)
+	sortNode := builder.qry.Nodes[project.Children[0]]
+	require.Equal(t, planpb.Node_JOIN, builder.qry.Nodes[sortNode.Children[0]].NodeType)
 }
 
 func TestFullTextDoesNotLimitIndependentIntersectionInputs(t *testing.T) {

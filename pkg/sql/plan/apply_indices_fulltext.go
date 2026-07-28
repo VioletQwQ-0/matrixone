@@ -75,11 +75,37 @@ func (builder *QueryBuilder) applyIndicesForProjectionUsingFullTextIndex(nodeID 
 		// truncate that stream before an explicit sort on another expression.
 		internalLimit, internalOffset = nil, nil
 	}
+	coverPKOnly := false
+	if sortNode == nil && paginationLimit != nil && len(filterids) == 1 && len(projids) == 0 &&
+		len(scanNode.FilterList) == 1 && len(projNode.ProjectList) == 1 &&
+		scanNode.TableDef.Pkey != nil && len(scanNode.TableDef.Pkey.Names) == 1 {
+		pkPos := scanNode.TableDef.Name2ColIndex[scanNode.TableDef.Pkey.PkeyColName]
+		projectedPK := projNode.ProjectList[0].GetCol()
+		async, err := catalog.IsIndexAsync(filterIndexDefs[0].IndexAlgoParams)
+		if err != nil {
+			return -1, err
+		}
+		coverPKOnly = !async && projectedPK != nil &&
+			projectedPK.RelPos == scanNode.BindingTags[0] && projectedPK.ColPos == pkPos
+	}
 
 	idxID, filter_node_ids, proj_node_ids, err := builder.applyJoinFullTextIndices(nodeID, projNode, scanNode,
-		internalLimit, internalOffset, sortNode == nil, filterids, filterIndexDefs, projids, projIndexDef, eqmap, colRefCnt, idxColMap)
+		internalLimit, internalOffset, sortNode == nil, coverPKOnly, filterids, filterIndexDefs, projids, projIndexDef, eqmap, colRefCnt, idxColMap)
 	if err != nil {
 		return -1, err
+	}
+	if coverPKOnly {
+		ftNode := builder.qry.Nodes[filter_node_ids[0]]
+		projectedType := projNode.ProjectList[0].Typ
+		projectedName := projNode.ProjectList[0].GetCol().Name
+		projNode.ProjectList[0] = &plan.Expr{
+			Typ: projectedType,
+			Expr: &plan.Expr_Col{Col: &plan.ColRef{
+				RelPos: ftNode.BindingTags[0],
+				ColPos: 0,
+				Name:   projectedName,
+			}},
+		}
 	}
 	// Pagination belongs to the result of the base-table/fulltext join, never
 	// to the base scan and fulltext stream independently. Both inputs are
@@ -188,7 +214,7 @@ func (builder *QueryBuilder) applyIndicesForAggUsingFullTextIndex(nodeID int32, 
 	eqmap := make(map[int32]int32)
 
 	idxID, _, _, err := builder.applyJoinFullTextIndices(nodeID, projNode, scanNode,
-		scanNode.Limit, scanNode.Offset, false, filterids, filterIndexDefs, projids, projIndexDefs, eqmap, colRefCnt, idxColMap)
+		scanNode.Limit, scanNode.Offset, false, false, filterids, filterIndexDefs, projids, projIndexDefs, eqmap, colRefCnt, idxColMap)
 	if err != nil {
 		return -1, err
 	}
@@ -205,7 +231,7 @@ func (builder *QueryBuilder) applyIndicesForAggUsingFullTextIndex(nodeID int32, 
 
 func (builder *QueryBuilder) applyJoinFullTextIndices(nodeID int32, projNode *plan.Node, scanNode *plan.Node,
 	paginationLimit, paginationOffset *plan.Expr,
-	allowFilterOnlyFastPath bool,
+	allowFilterOnlyFastPath, coverPKOnly bool,
 	filterids []int32, filter_indexDefs []*plan.IndexDef,
 	projids []int32, proj_indexDefs []*plan.IndexDef, eqmap map[int32]int32,
 	colRefCnt map[[2]int32]int, idxColMap map[[2]int32]*plan.Expr) (int32, []int32, []int32, error) {
@@ -600,6 +626,10 @@ func (builder *QueryBuilder) applyJoinFullTextIndices(nodeID int32, projNode *pl
 
 		joinnodeID = outerJoinNodeID
 	} else {
+		if coverPKOnly {
+			joinnodeID = last_node_id
+			return joinnodeID, ret_filter_node_ids, ret_proj_node_ids, nil
+		}
 		// No extra filters: simple JOIN (scanNode, ft_func_chain)
 		wherePkEqPk, _ := BindFuncExprImplByPlanExpr(builder.GetContext(), "=", []*Expr{
 			{
@@ -684,6 +714,7 @@ func (builder *QueryBuilder) applyFullTextFiltersForScanInJoin(nodeID int32, sca
 		scanNode,
 		scanNode.Limit,
 		scanNode.Offset,
+		false,
 		false,
 		filterids,
 		filterIndexDefs,
