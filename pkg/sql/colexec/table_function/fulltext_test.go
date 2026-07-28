@@ -431,6 +431,8 @@ func TestFilterOnlyBooleanAndBoundsCandidatesAndSkipsCount(t *testing.T) {
 	err = ut.arg.ctr.state.start(ut.arg, ut.proc, 0, nil)
 	require.NoError(t, err)
 	require.True(t, strings.HasSuffix(streamingSQL, " LIMIT 2"), streamingSQL)
+	require.Contains(t, streamingSQL, "word IN ('matrix', 'origin')")
+	require.NotContains(t, streamingSQL, "WITH ")
 
 	state := ut.arg.ctr.state.(*fulltextState)
 	require.True(t, state.filterOnlyAnd)

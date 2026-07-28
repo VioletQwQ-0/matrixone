@@ -387,7 +387,15 @@ func runWordStats(
 		return
 	}
 	if u.filterOnlyAnd {
-		sql = fmt.Sprintf("%s LIMIT %d", sql, u.limit)
+		if boundedSQL, ok, boundedErr := fulltext.BooleanAndTopKSQL(
+			s.Pattern, s.Mode, s.TblName, u.param.Parser, u.limit,
+		); boundedErr != nil {
+			return result, boundedErr
+		} else if ok {
+			sql = boundedSQL
+		} else {
+			sql = fmt.Sprintf("%s LIMIT %d", sql, u.limit)
+		}
 	}
 
 	sqlProc := sqlexec.NewSqlProcess(proc)

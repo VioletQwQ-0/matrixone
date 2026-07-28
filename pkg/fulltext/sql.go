@@ -165,6 +165,49 @@ func PhraseTopKBM25SQL(ps []*Pattern, mode int64, idxTable string, idfSq float64
 	), true, nil
 }
 
+// BooleanAndTopKSQL builds the bounded posting-intersection query used by the
+// filter-only fast path. It is intentionally limited to a single strict JOIN
+// whose required terms each resolve to one exact token. More complex patterns
+// retain the general Boolean SQL generator.
+func BooleanAndTopKSQL(ps []*Pattern, mode int64, idxTable, parser string, limit uint64) (string, bool, error) {
+	if mode != int64(tree.FULLTEXT_BOOLEAN) || limit == 0 || len(ps) != 1 {
+		return "", false, nil
+	}
+	root := ps[0]
+	if root.Operator != JOIN || len(root.Children) < 2 {
+		return "", false, nil
+	}
+
+	terms := make([]string, 0, len(root.Children))
+	seen := make(map[string]struct{}, len(root.Children))
+	for _, required := range root.Children {
+		if required.Operator != PLUS || len(required.Children) != 1 || required.Children[0].Operator != TEXT {
+			return "", false, nil
+		}
+		tokens, err := ParsePatternInNLMode(required.Children[0].Text, parser)
+		if err != nil {
+			return "", false, err
+		}
+		if len(tokens) != 1 || tokens[0].Operator != TEXT {
+			return "", false, nil
+		}
+		term := tokens[0].Text
+		if _, exists := seen[term]; exists {
+			continue
+		}
+		seen[term] = struct{}{}
+		terms = append(terms, fmt.Sprintf("'%s'", escape(term)))
+	}
+	if len(terms) == 0 {
+		return "", false, nil
+	}
+
+	return fmt.Sprintf(
+		"SELECT doc_id, CAST(0 as int) FROM %s WHERE word IN (%s) GROUP BY doc_id HAVING COUNT(DISTINCT word) = %d LIMIT %d",
+		idxTable, strings.Join(terms, ", "), len(terms), limit,
+	), true, nil
+}
+
 // GenTextSql that support ngram in boolean mode
 // TEXT is a word. For english, it is fine to have a simple filter word = 'word".
 // For Chinese, word should be tokenize into ngram

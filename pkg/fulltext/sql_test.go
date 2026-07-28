@@ -167,6 +167,29 @@ func TestSqlBoolean(t *testing.T) {
 	}
 }
 
+func TestBooleanAndTopKSQL(t *testing.T) {
+	s, err := NewSearchAccum("src", "index", "+Matrix +Origin +Matrix", int64(tree.FULLTEXT_BOOLEAN), "", ALGO_TFIDF)
+	require.NoError(t, err)
+
+	sql, ok, err := BooleanAndTopKSQL(s.Pattern, s.Mode, "`idx`", "", 100)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t,
+		"SELECT doc_id, CAST(0 as int) FROM `idx` WHERE word IN ('matrix', 'origin') GROUP BY doc_id HAVING COUNT(DISTINCT word) = 2 LIMIT 100",
+		sql,
+	)
+}
+
+func TestBooleanAndTopKSQLFallsBackForNonExactTerm(t *testing.T) {
+	s, err := NewSearchAccum("src", "index", "+读书会 +运营", int64(tree.FULLTEXT_BOOLEAN), "", ALGO_TFIDF)
+	require.NoError(t, err)
+
+	sql, ok, err := BooleanAndTopKSQL(s.Pattern, s.Mode, "`idx`", "", 100)
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Empty(t, sql)
+}
+
 func TestSqlBooleanBM25(t *testing.T) {
 
 	tests := []TestCase{
