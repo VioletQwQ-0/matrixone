@@ -65,6 +65,8 @@ type fulltextState struct {
 	minheap          vectorindex.SearchResultHeap
 	resbuf           []*vectorindex.SearchResultAnyKey
 	ranking          bool
+	strictAndTerms   []string
+	estimatedDriver  uint64
 
 	// Partition-ordered traversal of agghtab for the zero-LIMIT scoring path.
 	// Built ONCE per scoring phase (aggregation is complete before the first
@@ -114,6 +116,8 @@ func (u *fulltextState) resetRowState(proc *process.Process) {
 	u.docIDMap = make(map[any]any)
 	u.minheap = nil
 	u.resbuf = nil
+	u.strictAndTerms = nil
+	u.estimatedDriver = 0
 	u.scoreKeys = nil
 	u.scorePos = 0
 	u.scoreOrdered = false
@@ -904,6 +908,16 @@ func fulltextIndexMatch(
 			stats.AddExtraStat("FulltextEstimatedDriverRows", int64(driverRows))
 			if err = s.OrderStrictBooleanAnd(ordered, u.param.Parser); err != nil {
 				return err
+			}
+			u.strictAndTerms = ordered
+			u.estimatedDriver = driverRows
+			fast, fastErr := runFulltextAndIntersection(u, proc, tableFunction, s)
+			if fastErr != nil {
+				return fastErr
+			}
+			if fast {
+				u.sacc = s
+				return nil
 			}
 		}
 

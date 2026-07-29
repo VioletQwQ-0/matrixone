@@ -29,6 +29,13 @@ func TestEscape(t *testing.T) {
 	assert.Equal(t, `normal`, escape("normal"))
 }
 
+func TestExactTermPostingSQL(t *testing.T) {
+	sql := ExactTermPostingSQL("`db`.`idx`", "ma'trix")
+	require.Equal(t, "SELECT doc_id FROM `db`.`idx` WHERE word = 'ma\\'trix'", sql)
+	require.NotContains(t, sql, "GROUP BY")
+	require.NotContains(t, sql, "JOIN")
+}
+
 func TestPatternToSqlRejectsEmptyPattern(t *testing.T) {
 	var err error
 	require.NotPanics(t, func() {

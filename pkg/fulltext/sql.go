@@ -118,6 +118,13 @@ func cappedTfExpr() string {
 	return "CASE WHEN COUNT(*) > 255 THEN 255 ELSE COUNT(*) END"
 }
 
+// ExactTermPostingSQL is the primitive used by the bounded strict-AND runtime.
+// It intentionally performs no grouping or scoring: the caller deduplicates
+// position rows and intersects doc_id sets in an mpool-accounted structure.
+func ExactTermPostingSQL(idxTable, term string) string {
+	return fmt.Sprintf("SELECT doc_id FROM %s WHERE word = '%s'", idxTable, escape(term))
+}
+
 func PhraseCountSQL(ps []*Pattern, mode int64, idxTable string) (string, bool, error) {
 	if mode != int64(tree.FULLTEXT_NL) && mode != int64(tree.FULLTEXT_DEFAULT) {
 		return "", false, nil
