@@ -391,6 +391,42 @@ var (
 	TxnPreparedWaitDurationHistogram   = txnTNSideDurationHistogram.WithLabelValues("5-PreparedWait")
 	TxnPreparedDurationHistogram       = txnTNSideDurationHistogram.WithLabelValues("6-Prepared")
 
+	// Profiling-only commit1PC stage metrics. The existing TN-side histogram
+	// already covers the three queue and three worker stages; these observers
+	// split the remaining durability/apply/response work without changing the
+	// commit completion point.
+	txnCommit1PCProfileDurationHistogram = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "mo",
+			Subsystem: "txn",
+			Name:      "commit1pc_profile_duration_seconds",
+			Help:      "Profiling-only commit1PC duration by stage.",
+			Buckets:   getDurationBuckets(),
+		}, []string{"stage"})
+	TxnCommit1PCFreezeDurationHistogram       = txnCommit1PCProfileDurationHistogram.WithLabelValues("freeze")
+	TxnCommit1PCPreWalEnqueueHistogram        = txnCommit1PCProfileDurationHistogram.WithLabelValues("prewal-enqueue")
+	TxnCommit1PCWalEnqueueHistogram           = txnCommit1PCProfileDurationHistogram.WithLabelValues("wal-enqueue")
+	TxnCommit1PCApplyEnqueueHistogram         = txnCommit1PCProfileDurationHistogram.WithLabelValues("apply-enqueue")
+	TxnCommit1PCTableWalSyncDurationHistogram = txnCommit1PCProfileDurationHistogram.WithLabelValues("table-wal-sync")
+	TxnCommit1PCWalDurableDurationHistogram   = txnCommit1PCProfileDurationHistogram.WithLabelValues("wal-durable")
+	TxnCommit1PCTailCompleteDurationHistogram = txnCommit1PCProfileDurationHistogram.WithLabelValues("tail-complete")
+	TxnCommit1PCApplyCommitDurationHistogram  = txnCommit1PCProfileDurationHistogram.WithLabelValues("apply-commit")
+	TxnCommit1PCDoneApplyDurationHistogram    = txnCommit1PCProfileDurationHistogram.WithLabelValues("done-apply")
+	TxnCommit1PCResponseDurationHistogram     = txnCommit1PCProfileDurationHistogram.WithLabelValues("response")
+	TxnCommit1PCTotalDurationHistogram        = txnCommit1PCProfileDurationHistogram.WithLabelValues("total")
+
+	txnCommit1PCProfileBatchSizeHistogram = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "mo",
+			Subsystem: "txn",
+			Name:      "commit1pc_profile_batch_size",
+			Help:      "Profiling-only commit1PC callback batch size.",
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 12),
+		}, []string{"stage"})
+	TxnCommit1PCPreWalBatchSizeHistogram = txnCommit1PCProfileBatchSizeHistogram.WithLabelValues("prewal")
+	TxnCommit1PCWalBatchSizeHistogram    = txnCommit1PCProfileBatchSizeHistogram.WithLabelValues("wal")
+	TxnCommit1PCApplyBatchSizeHistogram  = txnCommit1PCProfileBatchSizeHistogram.WithLabelValues("apply")
+
 	txnS3TombstoneCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "mo",

@@ -16,9 +16,11 @@ package txnbase
 
 import (
 	"context"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 )
 
@@ -50,13 +52,20 @@ func (txn *Txn) rollback1PC(ctx context.Context) (err error) {
 }
 
 func (txn *Txn) commit1PC(ctx context.Context) (err error) {
+	commitStart := time.Now()
+	defer func() {
+		v2.TxnCommit1PCTotalDurationHistogram.Observe(time.Since(commitStart).Seconds())
+	}()
 	state := txn.GetTxnState(false)
 	if state != txnif.TxnStateActive {
 		logutil.Warnf("unexpected txn state : %s", txnif.TxnStrState(state))
 		return moerr.NewTAECommitNoCtxf("invalid txn state %s", txnif.TxnStrState(state))
 	}
 	txn.Add(1)
-	if err = txn.Freeze(ctx); err == nil {
+	freezeStart := time.Now()
+	err = txn.Freeze(ctx)
+	v2.TxnCommit1PCFreezeDurationHistogram.Observe(time.Since(freezeStart).Seconds())
+	if err == nil {
 		txn.GetStore().StartTrace()
 		err = txn.Mgr.OnOpTxn(&OpTxn{
 			ctx: ctx,
@@ -76,6 +85,10 @@ func (txn *Txn) commit1PC(ctx context.Context) (err error) {
 		txn.DoneWithErr(err, true)
 	}
 	txn.Wait()
+	responseStart := time.Now()
+	defer func() {
+		v2.TxnCommit1PCResponseDurationHistogram.Observe(time.Since(responseStart).Seconds())
+	}()
 	if err = txn.Mgr.DeleteTxn(txn.GetID()); err != nil {
 		return
 	}

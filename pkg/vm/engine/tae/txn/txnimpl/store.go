@@ -754,11 +754,24 @@ func (store *txnStore) ApplyRollback() (err error) {
 }
 
 func (store *txnStore) WaitWalAndTail(ctx context.Context) (err error) {
+	profileCommit := store.txn != nil &&
+		!store.txn.IsReplay() &&
+		!store.IsHeartbeat() &&
+		store.txn.GetTxnState(false) == txnif.TxnStatePreparing
+	tableWalStart := time.Now()
 	for _, db := range store.dbs {
 		if err = db.WaitWal(); err != nil {
+			if profileCommit {
+				v2.TxnCommit1PCTableWalSyncDurationHistogram.Observe(time.Since(tableWalStart).Seconds())
+			}
 			return
 		}
 	}
+	if profileCommit {
+		v2.TxnCommit1PCTableWalSyncDurationHistogram.Observe(time.Since(tableWalStart).Seconds())
+	}
+
+	walDurableStart := time.Now()
 	moprobe.WithRegion(ctx, moprobe.TxnStoreWaitWALFlush, func() {
 		for _, e := range store.logs {
 			if waitErr := e.WaitDone(); waitErr != nil && err == nil {
@@ -767,8 +780,15 @@ func (store *txnStore) WaitWalAndTail(ctx context.Context) (err error) {
 			e.Free()
 		}
 	})
+	if profileCommit {
+		v2.TxnCommit1PCWalDurableDurationHistogram.Observe(time.Since(walDurableStart).Seconds())
+	}
 
+	tailStart := time.Now()
 	store.WaitEvent(txnif.TailCollecting)
+	if profileCommit {
+		v2.TxnCommit1PCTailCompleteDurationHistogram.Observe(time.Since(tailStart).Seconds())
+	}
 	return
 }
 

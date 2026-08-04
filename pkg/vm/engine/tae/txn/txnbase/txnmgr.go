@@ -31,6 +31,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/txn/clock"
+	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
@@ -541,8 +542,29 @@ func (mgr *TxnManager) OnOpTxn(op *OpTxn) (err error) {
 	if op.Txn.GetStore().IsOffline() {
 		panic("offline txn should not be here")
 	}
+	start := time.Now()
 	_, err = mgr.preWalQueue.Enqueue(op)
+	if isProfiledCommitOp(op) {
+		v2.TxnCommit1PCPreWalEnqueueHistogram.Observe(time.Since(start).Seconds())
+	}
 	return
+}
+
+func isProfiledCommitOp(op *OpTxn) bool {
+	return op != nil &&
+		op.Op == OpCommit &&
+		!op.IsReplay() &&
+		!op.Txn.GetStore().IsHeartbeat()
+}
+
+func profiledCommitBatchSize(items []any) int {
+	count := 0
+	for _, item := range items {
+		if op, ok := item.(*OpTxn); ok && isProfiledCommitOp(op) {
+			count++
+		}
+	}
+	return count
 }
 
 func (mgr *TxnManager) onPrePrepare(op *OpTxn) {
@@ -647,6 +669,8 @@ func (mgr *TxnManager) onPrepare1PC(op *OpTxn, ts types.TS) {
 func (mgr *TxnManager) on1PCApply(op *OpTxn) {
 	var err error
 	var isAbort bool
+	profileCommit := isProfiledCommitOp(op)
+	applyStart := time.Now()
 	switch op.Op {
 	case OpCommit:
 		isAbort = false
@@ -660,10 +684,17 @@ func (mgr *TxnManager) on1PCApply(op *OpTxn) {
 			logutil.Warn("[ApplyRollback]", TxnField(op.Txn), common.ErrorField(err))
 		}
 	}
+	if profileCommit {
+		v2.TxnCommit1PCApplyCommitDurationHistogram.Observe(time.Since(applyStart).Seconds())
+	}
+	doneStart := time.Now()
 	mgr.OnCommitTxn(op.Txn)
 	// Here to change the txn state and
 	// broadcast the rollback or commit event to all waiting threads
 	_ = op.Txn.DoneApply(err, isAbort)
+	if profileCommit {
+		v2.TxnCommit1PCDoneApplyDurationHistogram.Observe(time.Since(doneStart).Seconds())
+	}
 }
 func (mgr *TxnManager) OnCommitTxn(txn txnif.AsyncTxn) {
 	if mgr.GetTxnSkipFlags().Skip(TxnFlag_Heartbeat) && txn.GetStore().IsHeartbeat() {
@@ -738,6 +769,9 @@ func (mgr *TxnManager) onWal(op *OpTxn) bool {
 
 func (mgr *TxnManager) onApply(items ...any) {
 	now := time.Now()
+	if count := profiledCommitBatchSize(items); count > 0 {
+		v2.TxnCommit1PCApplyBatchSizeHistogram.Observe(float64(count))
+	}
 	for _, item := range items {
 		op := item.(*OpTxn)
 		store := op.Txn.GetStore()
@@ -864,14 +898,21 @@ func (mgr *TxnManager) Stop() {
 
 func (mgr *TxnManager) onPreWalStage(items ...any) {
 	now := time.Now()
+	if count := profiledCommitBatchSize(items); count > 0 {
+		v2.TxnCommit1PCPreWalBatchSizeHistogram.Observe(float64(count))
+	}
 	for _, item := range items {
 		op := item.(*OpTxn)
 		op.Txn.GetStore().TriggerTrace(txnif.TracePreWal)
 		if !mgr.preWal(op) {
 			continue
 		}
+		enqueueStart := time.Now()
 		if _, err := mgr.walQueue.Enqueue(op); err != nil {
 			panic(err)
+		}
+		if isProfiledCommitOp(op) {
+			v2.TxnCommit1PCWalEnqueueHistogram.Observe(time.Since(enqueueStart).Seconds())
 		}
 	}
 	common.DoIfDebugEnabled(func() {
@@ -884,6 +925,9 @@ func (mgr *TxnManager) onPreWalStage(items ...any) {
 
 func (mgr *TxnManager) onWalStage(items ...any) {
 	now := time.Now()
+	if count := profiledCommitBatchSize(items); count > 0 {
+		v2.TxnCommit1PCWalBatchSizeHistogram.Observe(float64(count))
+	}
 	for _, item := range items {
 		t1 := time.Now()
 		op := item.(*OpTxn)
@@ -920,7 +964,11 @@ func (mgr *TxnManager) postWal(op *OpTxn, inWal bool) {
 	}
 
 	// waiting for all things done and then to apply this commit/rollback
+	enqueueStart := time.Now()
 	if _, err := mgr.applyQueue.Enqueue(op); err != nil {
 		panic(err)
+	}
+	if isProfiledCommitOp(op) {
+		v2.TxnCommit1PCApplyEnqueueHistogram.Observe(time.Since(enqueueStart).Seconds())
 	}
 }

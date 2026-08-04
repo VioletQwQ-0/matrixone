@@ -163,6 +163,8 @@ func initTxnMetrics() {
 	registry.MustRegister(TxnDeadlockDetectorQueueDepthGauge)
 
 	registry.MustRegister(txnCommitDurationHistogram)
+	registry.MustRegister(txnCommit1PCProfileDurationHistogram)
+	registry.MustRegister(txnCommit1PCProfileBatchSizeHistogram)
 	registry.MustRegister(TxnLifeCycleDurationHistogram)
 	registry.MustRegister(TxnLifeCycleStatementsTotalHistogram)
 	registry.MustRegister(txnCreateDurationHistogram)

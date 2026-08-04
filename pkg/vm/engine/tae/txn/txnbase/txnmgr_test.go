@@ -26,6 +26,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestProfiledCommitBatchSize(t *testing.T) {
+	normal := &Txn{Store: &NoopTxnStore{}}
+	heartbeat := &Txn{Store: &heartbeatStore{}}
+	replay := &Txn{Store: &NoopTxnStore{}, isReplay: true}
+
+	require.True(t, isProfiledCommitOp(&OpTxn{Txn: normal, Op: OpCommit}))
+	require.False(t, isProfiledCommitOp(nil))
+	require.Equal(t, 1, profiledCommitBatchSize([]any{
+		&OpTxn{Txn: normal, Op: OpCommit},
+		&OpTxn{Txn: normal, Op: OpRollback},
+		&OpTxn{Txn: heartbeat, Op: OpCommit},
+		&OpTxn{Txn: replay, Op: OpCommit},
+		"not-an-op",
+	}))
+}
+
 func TestTxnWaiterCancelAndReuse(t *testing.T) {
 	var waiter txnWaiter
 	waiter.Add()
