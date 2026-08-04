@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/common/log"
@@ -53,6 +54,12 @@ type localLockTable struct {
 		ownerLocalWaits  map[ownerLocalTxnKey][]ownerLocalWaitEdge
 	}
 
+	profile struct {
+		ownerKind      atomic.Uint32
+		ownerRowCount  atomic.Uint32
+		ownerRowHashes [localLockProfileMaxOwnerRows]atomic.Uint64
+	}
+
 	options struct {
 		beforeCloseFirstWaiter func(c *lockContext)
 		beforeWait             func(c *lockContext) func()
@@ -76,7 +83,7 @@ func newLocalLockTable(
 		txnHolder: txnHolder,
 		logger:    logger,
 	}
-	l.mu.store = newBtreeBasedStorage()
+	l.mu.store = newProfiledLockStorage()
 	l.mu.ownerLocalWaits = make(map[ownerLocalTxnKey][]ownerLocalWaitEdge)
 	l.mu.tableCommittedAt, _ = clock.Now()
 	return l
@@ -304,10 +311,10 @@ func (l *localLockTable) unlock(
 	locks := ls.slice()
 	defer locks.unref()
 
-	l.mu.Lock()
+	holdStart := l.profileUnlockMutex()
 	v2.TxnUnlockBtreeGetLockDurationHistogram.Observe(time.Since(start).Seconds())
 
-	defer l.mu.Unlock()
+	defer l.profileReleaseUnlockMutex(holdStart)
 	if l.mu.closed {
 		return
 	}
@@ -480,8 +487,8 @@ func (l *localLockTable) close(reason closeReason) {
 }
 
 func (l *localLockTable) doAcquireLock(c *lockContext) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	holdStart := l.profileAcquireMutex(c)
+	defer l.profileReleaseAcquireMutex(holdStart)
 
 	if l.mu.closed {
 		return moerr.NewInvalidStateNoCtx("local lock table closed")
@@ -624,9 +631,16 @@ func (l *localLockTable) handleLockConflictLocked(
 	if !c.lockWaitDeadline.IsZero() && !time.Now().Before(c.lockWaitDeadline) {
 		return c.getLockWaitTimeoutErr()
 	}
-	if l.detectOwnerLocalDeadlockLocked(c, conflictWith) {
+	deadlockStart := time.Now()
+	deadlock := l.detectOwnerLocalDeadlockLocked(c, conflictWith)
+	v2.LocalLockProfileDeadlockDurationHistogram.Observe(time.Since(deadlockStart).Seconds())
+	if deadlock {
 		return ErrDeadLockDetected
 	}
+	waiterStart := time.Now()
+	defer func() {
+		v2.LocalLockProfileWaiterDurationHistogram.Observe(time.Since(waiterStart).Seconds())
+	}()
 
 	if c.opts.Granularity == pb.Granularity_Range {
 		l.closeRangeLastWaiterLocked(c)
