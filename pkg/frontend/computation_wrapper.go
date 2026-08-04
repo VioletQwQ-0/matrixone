@@ -39,6 +39,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/sql/schedule"
 	"github.com/matrixorigin/matrixone/pkg/sql/util"
 	util2 "github.com/matrixorigin/matrixone/pkg/util"
+	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/util/trace"
 	"github.com/matrixorigin/matrixone/pkg/util/trace/impl/motrace/statistic"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae"
@@ -628,6 +629,8 @@ func rebuildPreparePlan(
 	prepareStmt *PrepareStmt,
 	buildFn func(context.Context, FeSession, plan2.CompilerContext, tree.Statement) (*plan2.Plan, error),
 ) (*plan2.Plan, error) {
+	v2.PreparedAdmissionCounter.WithLabelValues(
+		"build-plan", preparedProtocolReason(executionSes.GetCmd())+"-rebuild").Inc()
 	innerStmt, owned, err := freshPreparedCloneStatement(execCtx.reqCtx, prepareStmt)
 	if err != nil {
 		return nil, err
@@ -818,6 +821,21 @@ func initExecuteStmtParamWithResolverInSession(
 	protocolMismatch := prepareStmt.protocolVersion != 0 &&
 		prepareStmt.protocolVersion != protocolVersion
 	needRebuild := preparePlanNeedsRebuild(change, modeMismatch, protocolMismatch) || fkSensitive
+	binaryExecute := execCtx.input != nil && execCtx.input.isBinaryProtExecute
+	if binaryExecute && needRebuild {
+		if change {
+			v2.PreparedAdmissionCounter.WithLabelValues("rebuild", "catalog-or-session-change").Inc()
+		}
+		if modeMismatch {
+			v2.PreparedAdmissionCounter.WithLabelValues("rebuild", "compatibility-mode-change").Inc()
+		}
+		if protocolMismatch {
+			v2.PreparedAdmissionCounter.WithLabelValues("rebuild", "protocol-version-change").Inc()
+		}
+		if fkSensitive {
+			v2.PreparedAdmissionCounter.WithLabelValues("rebuild", "foreign-key-sensitive").Inc()
+		}
+	}
 
 	// Rebuild the plan when catalog schema, session temporary-table name
 	// resolution, FK-check state, protocol, or compatibility mode changed.
@@ -962,6 +980,21 @@ func initExecuteStmtParamWithResolverInSession(
 	if retComp != nil && querySchedulingIntentForStatementWithSQLMode(
 		owner, originSQL, prepareStmt.schedulingSQLMode).Explicit {
 		retComp = nil
+	}
+	if binaryExecute {
+		v2.PreparedAdmissionCounter.WithLabelValues(
+			"pk-eligibility", preparedPKAdmissionReason(preparePlan.Plan)).Inc()
+		switch {
+		case executionSes.IsBackgroundSession():
+			v2.PreparedAdmissionCounter.WithLabelValues("compile-cache", "background-session").Inc()
+		case querySchedulingIntentForStatementWithSQLMode(
+			owner, originSQL, prepareStmt.schedulingSQLMode).Explicit:
+			v2.PreparedAdmissionCounter.WithLabelValues("compile-cache", "explicit-scheduling").Inc()
+		case retComp == nil:
+			v2.PreparedAdmissionCounter.WithLabelValues("compile-cache", "miss-or-ineligible").Inc()
+		default:
+			v2.PreparedAdmissionCounter.WithLabelValues("compile-cache", "hit").Inc()
+		}
 	}
 	executionStmt, owned, err := freshPreparedCloneStatement(reqCtx, prepareStmt)
 	if err != nil {
@@ -1198,6 +1231,18 @@ func createCompile(
 	isPrepare bool,
 	schedulingTrace *schedule.TraceRecorder,
 ) (retCompile *compile.Compile, err error) {
+	compileReason := "other"
+	switch ses.GetCmd() {
+	case COM_STMT_PREPARE:
+		compileReason = "com-stmt-prepare"
+	case COM_STMT_EXECUTE:
+		if isPrepare {
+			compileReason = "com-stmt-execute-cache-rebuild"
+		} else {
+			compileReason = "com-stmt-execute-generic"
+		}
+	}
+	v2.PreparedAdmissionCounter.WithLabelValues("create-compile", compileReason).Inc()
 
 	addr := currentCNPipelineAddress(ses)
 	pu := getPu(ses.GetService())

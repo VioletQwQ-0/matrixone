@@ -57,6 +57,18 @@ var (
 	StartHandleRequestCounter = requestCounter.WithLabelValues("start-handle")
 	EndHandleRequestCounter   = requestCounter.WithLabelValues("end-handle")
 
+	// PreparedAdmissionCounter is intentionally fixed-cardinality profiling
+	// instrumentation. It is used to decide whether the existing prepared
+	// pipeline has enough exact-PK executions and residual generic work to
+	// justify a production specialization.
+	PreparedAdmissionCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "mo",
+			Subsystem: "frontend",
+			Name:      "prepared_admission_total",
+			Help:      "Prepared pipeline admission events by stage and reason.",
+		}, []string{"stage", "reason"})
+
 	resolveDurationHistogram = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "mo",
