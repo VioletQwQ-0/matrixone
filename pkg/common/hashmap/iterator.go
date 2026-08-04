@@ -108,7 +108,7 @@ func (itr *strHashmapIterator) releaseScratch() {
 		itr.mp.mp.Free(itr.keyBuffer)
 	}
 	itr.keyBuffer = nil
-	clear(itr.keys)
+	itr.clearKeys()
 }
 
 func (itr *strHashmapIterator) releaseAccountedScratch() {
@@ -118,12 +118,21 @@ func (itr *strHashmapIterator) releaseAccountedScratch() {
 	}
 	itr.mp.mp.Free(itr.keyBuffer)
 	itr.keyBuffer = nil
-	clear(itr.keys)
+	itr.clearKeys()
+}
+
+func (itr *strHashmapIterator) clearKeys() {
+	if cap(itr.keys) > 0 {
+		clear(itr.keys[:cap(itr.keys)])
+	}
 }
 
 func (itr *strHashmapIterator) Find(start, count int, vecs []*vector.Vector) ([]uint64, []int64, error) {
 	if err := itr.prepareHashKeys(vecs, start, count); err != nil {
 		return nil, nil, err
+	}
+	if count == 0 {
+		return itr.values, itr.zValues, nil
 	}
 	copy(itr.zValues[:count], OneInt64s[:count])
 	copy(itr.values[:count], zeroUint64[:count])
@@ -143,11 +152,11 @@ func (itr *strHashmapIterator) Find(start, count int, vecs []*vector.Vector) ([]
 
 // Insert a row from multiple columns into the hashmap, return true if it is new, otherwise false
 func (itr *strHashmapIterator) DetectDup(vecs []*vector.Vector, row int) (bool, error) {
-	keys := itr.keys
-	defer func() { keys[0] = keys[0][:0] }()
 	if err := itr.prepareHashKeys(vecs, row, 1); err != nil {
 		return false, err
 	}
+	keys := itr.keys
+	defer func() { keys[0] = keys[0][:0] }()
 	itr.encodeHashKeys(vecs, row, 1)
 	if err := itr.mp.hashMap.InsertStringBatch(itr.strHashStates, keys[:1], itr.values[:1]); err != nil {
 		return false, err
@@ -164,6 +173,9 @@ func (itr *strHashmapIterator) Insert(start, count int, vecs []*vector.Vector) (
 
 	if err = itr.prepareHashKeys(vecs, start, count); err != nil {
 		return nil, nil, err
+	}
+	if count == 0 {
+		return itr.values, itr.zValues, nil
 	}
 	defer func() {
 		for i := 0; i < count; i++ {
@@ -185,6 +197,24 @@ func (itr *strHashmapIterator) Insert(start, count int, vecs []*vector.Vector) (
 	}
 	updateHashTableRows(&itr.mp.rows, itr.mp.hasNull, vs, zvs)
 	return vs, zvs, err
+}
+
+func (itr *strHashmapIterator) ensureCapacity(count int) {
+	if count <= cap(itr.keys) &&
+		count <= cap(itr.values) &&
+		count <= cap(itr.zValues) &&
+		count <= cap(itr.strHashStates) {
+		itr.keys = itr.keys[:count]
+		itr.values = itr.values[:count]
+		itr.zValues = itr.zValues[:count]
+		itr.strHashStates = itr.strHashStates[:count]
+		return
+	}
+
+	itr.keys = make([][]byte, count)
+	itr.values = make([]uint64, count)
+	itr.zValues = make([]int64, count)
+	itr.strHashStates = make([][3]uint64, count)
 }
 
 func (itr *intHashMapIterator) Find(start, count int, vecs []*vector.Vector) ([]uint64, []int64, error) {
