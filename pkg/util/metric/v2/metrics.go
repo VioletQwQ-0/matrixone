@@ -312,6 +312,7 @@ func initLogServiceMetrics() {
 	registry.MustRegister(LogServiceAppendDurationHistogram)
 	registry.MustRegister(LogServiceAppendCounter)
 	registry.MustRegister(LogServiceAppendBytesHistogram)
+	registry.MustRegister(logServiceProfileIOCounter)
 	registry.MustRegister(LogServiceReplicaHealthGauge)
 }
 

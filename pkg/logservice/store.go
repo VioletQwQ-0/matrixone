@@ -45,6 +45,7 @@ import (
 	pb "github.com/matrixorigin/matrixone/pkg/pb/logservice"
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/taskservice"
+	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 )
 
 type storeMeta struct {
@@ -678,9 +679,17 @@ func (l *store) retryWait() {
 
 func (l *store) propose(ctx context.Context,
 	session *cli.Session, cmd []byte) (sm.Result, error) {
+	return l.proposeProfiled(ctx, session, cmd, false)
+}
+
+func (l *store) proposeProfiled(ctx context.Context,
+	session *cli.Session, cmd []byte, profileAppend bool) (sm.Result, error) {
 	count := 0
 	for {
 		count++
+		if profileAppend {
+			v2.LogServiceProfileProposeAttemptCounter.Inc()
+		}
 		result, err := l.nh.SyncPropose(ctx, session, cmd)
 		if err != nil {
 			if errors.Is(err, dragonboat.ErrShardNotReady) ||
@@ -692,6 +701,9 @@ func (l *store) propose(ctx context.Context,
 				return sm.Result{}, dragonboat.ErrTimeout
 			}
 			return sm.Result{}, err
+		}
+		if profileAppend {
+			v2.LogServiceProfileProposeSuccessCounter.Inc()
 		}
 		return result, nil
 	}
@@ -744,7 +756,7 @@ func (l *store) truncateLog(ctx context.Context,
 func (l *store) append(ctx context.Context,
 	shardID uint64, cmd []byte) (Lsn, error) {
 	session := l.nh.GetNoOPSession(shardID)
-	result, err := l.propose(ctx, session, cmd)
+	result, err := l.proposeProfiled(ctx, session, cmd, true)
 	if err != nil {
 		l.runtime.Logger().Error("propose failed", zap.Error(err))
 		return 0, err

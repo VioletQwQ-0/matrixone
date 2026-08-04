@@ -50,4 +50,14 @@ var (
 			Name:      "replica_health",
 			Help:      "logsevice replica health on the store",
 		})
+
+	logServiceProfileIOCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "mo",
+			Subsystem: "logservice",
+			Name:      "profile_io_total",
+			Help:      "Profiling-only LogService append proposal operations.",
+		}, []string{"operation", "result"})
+	LogServiceProfileProposeAttemptCounter = logServiceProfileIOCounter.WithLabelValues("append-propose", "attempt")
+	LogServiceProfileProposeSuccessCounter = logServiceProfileIOCounter.WithLabelValues("append-propose", "success")
 )

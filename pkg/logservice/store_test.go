@@ -38,6 +38,8 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/pb/metadata"
 	"github.com/matrixorigin/matrixone/pkg/pb/task"
 	"github.com/matrixorigin/matrixone/pkg/taskservice"
+	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -279,10 +281,14 @@ func TestAppendLog(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), testIOTimeout)
 		defer cancel()
 		assert.NoError(t, store.getOrExtendTNLease(ctx, 1, 100))
+		attemptsBefore := testutil.ToFloat64(v2.LogServiceProfileProposeAttemptCounter)
+		successesBefore := testutil.ToFloat64(v2.LogServiceProfileProposeSuccessCounter)
 		cmd := getTestUserEntry()
 		lsn, err := store.append(ctx, 1, cmd)
 		assert.NoError(t, err)
 		assert.Equal(t, uint64(4), lsn)
+		assert.GreaterOrEqual(t, testutil.ToFloat64(v2.LogServiceProfileProposeAttemptCounter), attemptsBefore+1)
+		assert.Equal(t, successesBefore+1, testutil.ToFloat64(v2.LogServiceProfileProposeSuccessCounter))
 	}
 	runStoreTest(t, fn)
 }
