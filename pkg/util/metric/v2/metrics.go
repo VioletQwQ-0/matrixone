@@ -267,6 +267,7 @@ func initFrontendMetrics() {
 	registry.MustRegister(acceptConnDurationHistogram)
 	registry.MustRegister(routineCounter)
 	registry.MustRegister(requestCounter)
+	registry.MustRegister(PreparedAdmissionCounter)
 	registry.MustRegister(resolveDurationHistogram)
 	registry.MustRegister(createAccountDurationHistogram)
 	registry.MustRegister(pubSubDurationHistogram)
