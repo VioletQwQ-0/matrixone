@@ -2192,6 +2192,7 @@ func createPrepareStmtInSession(
 	}
 	var preparePlan *plan.Plan
 	protocolVersion := currentProtocolVersion(executionProc)
+	v2.PreparedAdmissionCounter.WithLabelValues("build-plan", preparedProtocolReason(owner.GetCmd())).Inc()
 	err := execCtx.withRootSQL(originSQL, func() (err error) {
 		preparePlan, err = buildPlanWithAuthorization(execCtx.reqCtx, executionSes, executionSes.GetTxnCompileCtx(), stmt)
 		return err
@@ -4858,6 +4859,12 @@ func doComQuery(ses *Session, execCtx *ExecCtx, input *UserInput) (retErr error)
 	var cws []ComputationWrapper
 	if err == nil {
 		execCtx.input = executionInput
+		switch ses.GetCmd() {
+		case COM_STMT_PREPARE:
+			v2.PreparedAdmissionCounter.WithLabelValues("parser", "com-stmt-prepare-parse").Inc()
+		case COM_STMT_EXECUTE:
+			v2.PreparedAdmissionCounter.WithLabelValues("parser", "com-stmt-execute-borrowed-ast").Inc()
+		}
 		cws, err = GetComputationWrapper(execCtx, ses.GetDatabaseName(),
 			ses.GetUserName(),
 			pu.StorageEngine,
@@ -5314,6 +5321,7 @@ func ExecRequest(ses *Session, execCtx *ExecCtx, req *Request) (resp *Response, 
 
 	case COM_STMT_PREPARE:
 		ses.SetCmd(COM_STMT_PREPARE)
+		v2.PreparedAdmissionCounter.WithLabelValues("protocol", "com-stmt-prepare").Inc()
 		sql = commonutil.UnsafeBytesToString(req.GetData().([]byte))
 		var preparedRemapDb map[string]string
 		// Materialize rewrite rules on the protocol payload before it enters the
@@ -5350,6 +5358,7 @@ func ExecRequest(ses *Session, execCtx *ExecCtx, req *Request) (resp *Response, 
 
 	case COM_STMT_EXECUTE:
 		ses.SetCmd(COM_STMT_EXECUTE)
+		v2.PreparedAdmissionCounter.WithLabelValues("protocol", "com-stmt-execute").Inc()
 		var prepareStmt *PrepareStmt
 		sql, prepareStmt, err = parseStmtExecute(execCtx.reqCtx, ses, req.GetData().([]byte))
 		if err != nil {
