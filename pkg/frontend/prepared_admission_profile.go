@@ -93,16 +93,132 @@ func preparedPKAdmissionReason(p *plan.Plan) string {
 		catalog.IsFakePkName(pkey.GetPkeyColName()) {
 		return "no-primary-key"
 	}
-	pkPos, ok := scan.GetTableDef().GetName2ColIndex()[pkey.GetPkeyColName()]
-	if !ok || len(scan.GetBindingTags()) != 1 {
+	if len(scan.GetBindingTags()) != 1 {
 		return "invalid-primary-key-metadata"
 	}
-	for _, filter := range scan.GetFilterList() {
-		if preparedPKEquality(filter, scan.GetBindingTags()[0], pkPos) {
-			return "eligible"
-		}
+	if preparedPKEqualityForTable(scan, scan.GetBindingTags()[0]) {
+		return "eligible"
 	}
 	return "no-bound-primary-key-equality"
+}
+
+func preparedPKEqualityForTable(scan *plan.Node, bindingTag int32) bool {
+	tableDef := scan.GetTableDef()
+	pkey := tableDef.GetPkey()
+	if pkey.GetPkeyColName() == catalog.CPrimaryKeyColName {
+		return preparedCompositePKEquality(
+			scan.GetFilterList(), bindingTag, tableDef.GetName2ColIndex(), pkey.GetNames())
+	}
+	pkPos, ok := tableDef.GetName2ColIndex()[pkey.GetPkeyColName()]
+	if !ok {
+		return false
+	}
+	for _, filter := range scan.GetFilterList() {
+		if preparedPKEquality(filter, bindingTag, pkPos) {
+			return true
+		}
+	}
+	return false
+}
+
+func preparedCompositePKEquality(filters []*plan.Expr, bindingTag int32, colIndex map[string]int32, pkNames []string) bool {
+	if len(pkNames) < 2 {
+		return false
+	}
+	required := make(map[int32]struct{}, len(pkNames))
+	for _, name := range pkNames {
+		pos, ok := colIndex[name]
+		if !ok {
+			return false
+		}
+		required[pos] = struct{}{}
+	}
+	cpkeyPos, hasCPKey := colIndex[catalog.CPrimaryKeyColName]
+	matched := make(map[int32]struct{}, len(required))
+	var visit func(*plan.Expr) bool
+	visit = func(expr *plan.Expr) bool {
+		if expr == nil {
+			return false
+		}
+		fn := expr.GetF()
+		if fn == nil || fn.GetFunc() == nil {
+			return false
+		}
+		if strings.EqualFold(fn.GetFunc().GetObjName(), "and") {
+			if len(fn.GetArgs()) == 0 {
+				return false
+			}
+			for _, arg := range fn.GetArgs() {
+				if !visit(arg) {
+					return false
+				}
+			}
+			return true
+		}
+		if len(fn.GetArgs()) != 2 || fn.GetFunc().GetObjName() != "=" {
+			return false
+		}
+		left, right := fn.GetArgs()[0], fn.GetArgs()[1]
+		if col := left.GetCol(); col != nil && col.GetRelPos() == bindingTag {
+			if _, ok := required[col.GetColPos()]; ok && preparedPKBoundValue(right) {
+				matched[col.GetColPos()] = struct{}{}
+				return true
+			}
+			if hasCPKey && col.GetColPos() == cpkeyPos &&
+				preparedCompositeBoundValue(right, len(pkNames)) {
+				for pos := range required {
+					matched[pos] = struct{}{}
+				}
+				return true
+			}
+		}
+		if col := right.GetCol(); col != nil && col.GetRelPos() == bindingTag {
+			if _, ok := required[col.GetColPos()]; ok && preparedPKBoundValue(left) {
+				matched[col.GetColPos()] = struct{}{}
+				return true
+			}
+			if hasCPKey && col.GetColPos() == cpkeyPos &&
+				preparedCompositeBoundValue(left, len(pkNames)) {
+				for pos := range required {
+					matched[pos] = struct{}{}
+				}
+				return true
+			}
+		}
+		return false
+	}
+	for _, filter := range filters {
+		if !visit(filter) {
+			continue
+		}
+		if len(matched) == len(required) {
+			return true
+		}
+	}
+	return false
+}
+
+func preparedCompositeBoundValue(expr *plan.Expr, partCount int) bool {
+	if expr == nil {
+		return false
+	}
+	if expr.GetLit() != nil || expr.GetP() != nil || expr.GetFold() != nil {
+		return true
+	}
+	fn := expr.GetF()
+	if fn == nil || fn.GetFunc() == nil {
+		return false
+	}
+	name := strings.ToLower(fn.GetFunc().GetObjName())
+	if name != "serial" && name != "serial_full" || len(fn.GetArgs()) < partCount {
+		return false
+	}
+	for _, arg := range fn.GetArgs() {
+		if !preparedPKBoundValue(arg) {
+			return false
+		}
+	}
+	return true
 }
 
 func preparedPKEquality(expr *plan.Expr, bindingTag, pkPos int32) bool {
