@@ -63,6 +63,17 @@ func TestPreparedPKAdmissionReason(t *testing.T) {
 			&plan.Node{NodeType: plan.Node_JOIN}), reason: "unsupported-shape"},
 		{name: "fake pk", plan: admissionPlan(plan.Query_SELECT,
 			admissionScanWithPK(catalog.FakePrimaryKeyColName, admissionFn("=", pkCol, param))), reason: "no-primary-key"},
+		{name: "composite full pk", plan: admissionPlan(plan.Query_SELECT,
+			admissionCompositeScan(admissionFn("=", admissionCol(7, 0), param),
+				admissionFn("=", admissionCol(7, 1), param))), reason: "eligible"},
+		{name: "composite partial pk", plan: admissionPlan(plan.Query_SELECT,
+			admissionCompositeScan(admissionFn("=", admissionCol(7, 0), param))), reason: "no-bound-primary-key-equality"},
+		{name: "composite encoded pk", plan: admissionPlan(plan.Query_SELECT,
+			admissionCompositeScan(admissionFn("=", admissionCol(7, 2),
+				admissionFn("serial_full", param, param)))), reason: "eligible"},
+		{name: "composite encoded partial pk", plan: admissionPlan(plan.Query_SELECT,
+			admissionCompositeScan(admissionFn("=", admissionCol(7, 2),
+				admissionFn("serial_full", param)))), reason: "no-bound-primary-key-equality"},
 	}
 
 	for _, test := range tests {
@@ -93,6 +104,18 @@ func admissionScanWithPK(pkName string, filters ...*plan.Expr) *plan.Node {
 		TableDef: &plan.TableDef{
 			Pkey:          &plan.PrimaryKeyDef{PkeyColName: pkName, Names: []string{pkName}},
 			Name2ColIndex: map[string]int32{pkName: 0},
+		},
+		FilterList: filters,
+	}
+}
+
+func admissionCompositeScan(filters ...*plan.Expr) *plan.Node {
+	return &plan.Node{
+		NodeType:    plan.Node_TABLE_SCAN,
+		BindingTags: []int32{7},
+		TableDef: &plan.TableDef{
+			Pkey:          &plan.PrimaryKeyDef{PkeyColName: catalog.CPrimaryKeyColName, Names: []string{"a", "b"}},
+			Name2ColIndex: map[string]int32{"a": 0, "b": 1, catalog.CPrimaryKeyColName: 2},
 		},
 		FilterList: filters,
 	}
