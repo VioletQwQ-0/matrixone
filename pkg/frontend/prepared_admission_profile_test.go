@@ -26,6 +26,7 @@ import (
 func TestPreparedPKAdmissionReason(t *testing.T) {
 	pkCol := admissionCol(7, 0)
 	param := &plan.Expr{Expr: &plan.Expr_P{P: &plan.ParamRef{Pos: 0}}}
+	literal := &plan.Expr{Expr: &plan.Expr_Lit{Lit: &plan.Literal{}}}
 	otherCol := admissionCol(7, 1)
 
 	tests := []struct {
@@ -38,6 +39,18 @@ func TestPreparedPKAdmissionReason(t *testing.T) {
 			admissionScan(false, nil, admissionFn("=", pkCol, param))), reason: "eligible"},
 		{name: "reversed equality", plan: admissionPlan(plan.Query_UPDATE,
 			admissionScan(false, nil, admissionFn("=", param, pkCol))), reason: "eligible"},
+		{name: "literal equality", plan: admissionPlan(plan.Query_SELECT,
+			admissionScan(false, nil, admissionFn("=", pkCol, literal))), reason: "eligible"},
+		{name: "cast parameter equality", plan: admissionPlan(plan.Query_SELECT,
+			admissionScan(false, nil, admissionFn("=", pkCol, admissionFn("cast", param)))), reason: "eligible"},
+		{name: "pk equality under and with residual", plan: admissionPlan(plan.Query_SELECT,
+			admissionScan(false, nil, admissionFn("and",
+				admissionFn("=", pkCol, param), admissionFn(">", otherCol, literal)))), reason: "eligible"},
+		{name: "pk equality under or", plan: admissionPlan(plan.Query_SELECT,
+			admissionScan(false, nil, admissionFn("or",
+				admissionFn("=", pkCol, param), admissionFn("=", otherCol, literal)))), reason: "no-bound-primary-key-equality"},
+		{name: "wrong binding", plan: admissionPlan(plan.Query_SELECT,
+			admissionScan(false, nil, admissionFn("=", admissionCol(8, 0), param))), reason: "no-bound-primary-key-equality"},
 		{name: "composite serial", plan: admissionPlan(plan.Query_DELETE,
 			admissionScan(false, nil, admissionFn("=", pkCol,
 				admissionFn("serial", param, &plan.Expr{Expr: &plan.Expr_Lit{Lit: &plan.Literal{}}})))), reason: "eligible"},
@@ -66,6 +79,18 @@ func TestPreparedPKAdmissionReason(t *testing.T) {
 		{name: "composite full pk", plan: admissionPlan(plan.Query_SELECT,
 			admissionCompositeScan(admissionFn("=", admissionCol(7, 0), param),
 				admissionFn("=", admissionCol(7, 1), param))), reason: "eligible"},
+		{name: "composite full pk under and with residual", plan: admissionPlan(plan.Query_SELECT,
+			admissionCompositeScan(admissionFn("and",
+				admissionFn("=", admissionCol(7, 0), param),
+				admissionFn("=", admissionCol(7, 1), param),
+				admissionFn(">", admissionCol(7, 3), literal)))), reason: "eligible"},
+		{name: "composite pk under or", plan: admissionPlan(plan.Query_SELECT,
+			admissionCompositeScan(admissionFn("or",
+				admissionFn("=", admissionCol(7, 0), param),
+				admissionFn("=", admissionCol(7, 1), param)))), reason: "no-bound-primary-key-equality"},
+		{name: "composite duplicate component", plan: admissionPlan(plan.Query_SELECT,
+			admissionCompositeScan(admissionFn("=", admissionCol(7, 0), param),
+				admissionFn("=", admissionCol(7, 0), literal))), reason: "no-bound-primary-key-equality"},
 		{name: "composite partial pk", plan: admissionPlan(plan.Query_SELECT,
 			admissionCompositeScan(admissionFn("=", admissionCol(7, 0), param))), reason: "no-bound-primary-key-equality"},
 		{name: "composite encoded pk", plan: admissionPlan(plan.Query_SELECT,
@@ -74,6 +99,9 @@ func TestPreparedPKAdmissionReason(t *testing.T) {
 		{name: "composite encoded partial pk", plan: admissionPlan(plan.Query_SELECT,
 			admissionCompositeScan(admissionFn("=", admissionCol(7, 2),
 				admissionFn("serial_full", param)))), reason: "no-bound-primary-key-equality"},
+		{name: "composite encoded extra part", plan: admissionPlan(plan.Query_SELECT,
+			admissionCompositeScan(admissionFn("=", admissionCol(7, 2),
+				admissionFn("serial_full", param, param, param)))), reason: "no-bound-primary-key-equality"},
 	}
 
 	for _, test := range tests {
