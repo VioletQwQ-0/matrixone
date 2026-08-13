@@ -32,6 +32,23 @@ type rollbackCleanupErrorStore struct {
 	err error
 }
 
+func TestProfiledCommitBatchSize(t *testing.T) {
+	normal := &Txn{Store: &NoopTxnStore{}}
+	heartbeat := &Txn{Store: &heartbeatStore{}}
+	replay := &Txn{Store: &NoopTxnStore{}, isReplay: true}
+
+	require.True(t, isProfiledCommitOp(&OpTxn{Txn: normal, Op: OpCommit}))
+	require.False(t, isProfiledCommitOp(nil))
+	require.False(t, isProfiledCommitOp(&OpTxn{}))
+	require.Equal(t, 1, profiledCommitBatchSize([]any{
+		&OpTxn{Txn: normal, Op: OpCommit},
+		&OpTxn{Txn: normal, Op: OpRollback},
+		&OpTxn{Txn: heartbeat, Op: OpCommit},
+		&OpTxn{Txn: replay, Op: OpCommit},
+		"not-an-op",
+	}))
+}
+
 func (store *rollbackCleanupErrorStore) Close() error {
 	return store.err
 }

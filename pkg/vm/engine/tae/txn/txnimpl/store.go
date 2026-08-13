@@ -59,78 +59,113 @@ func getTracer() *txnTracer {
 }
 
 func putTracer(tracer *txnTracer) {
-	tracer.task = nil
-	tracer.state = 0
+	*tracer = txnTracer{}
 	_tracerPool.Put(tracer)
 }
 
 type txnTracer struct {
-	state uint8
-	task  *trace.Task
-	stamp time.Time
+	state            uint8
+	task             *trace.Task
+	stamp            time.Time
+	profileState     uint8
+	profileStamp     time.Time
+	profileDurations [txnif.TraceDoneApply]time.Duration
+	profileSeen      [txnif.TraceDoneApply]bool
 }
 
 func (tracer *txnTracer) Trigger(state uint8) {
+	now := time.Now()
+	tracer.recordProfileTransition(state, now)
+
 	switch state {
-	case 0: // start preparing wait
-		_, tracer.task = trace.NewTask(context.Background(), "1-PreparingWait")
-		tracer.stamp = time.Now()
-		tracer.state = 0
-
-	case 1: // end preparing wait and start preparing
-		if tracer.task != nil && tracer.state == 0 {
-			tracer.task.End()
-			v2.TxnPreparingWaitDurationHistogram.Observe(time.Since(tracer.stamp).Seconds())
-		}
-		_, tracer.task = trace.NewTask(context.Background(), "2-Preparing")
-		tracer.stamp = time.Now()
-		tracer.state = 1
-
-	case 2: // end preparing and start prepare wal wait
-		if tracer.task != nil && tracer.state == 1 {
-			tracer.task.End()
-			v2.TxnPreparingDurationHistogram.Observe(time.Since(tracer.stamp).Seconds())
-		}
-		_, tracer.task = trace.NewTask(context.Background(), "3-PrepareWalWait")
-		tracer.stamp = time.Now()
-		tracer.state = 2
-
-	case 3: // end prepare wal wait and start prepare wal
-		if tracer.task != nil && tracer.state == 2 {
-			tracer.task.End()
-			v2.TxnPrepareWalWaitDurationHistogram.Observe(time.Since(tracer.stamp).Seconds())
-		}
-		_, tracer.task = trace.NewTask(context.Background(), "4-PrepareWal")
-		tracer.stamp = time.Now()
-		tracer.state = 3
-
-	case 4: // end prepare wal and start prepared wait
-		if tracer.task != nil && tracer.state == 3 {
-			tracer.task.End()
-			v2.TxnPrepareWalDurationHistogram.Observe(time.Since(tracer.stamp).Seconds())
-		}
-		_, tracer.task = trace.NewTask(context.Background(), "5-PreparedWait")
-		tracer.stamp = time.Now()
-		tracer.state = 4
-
-	case 5: // end prepared wait and start prepared
-		if tracer.task != nil && tracer.state == 4 {
-			tracer.task.End()
-			v2.TxnPreparedWaitDurationHistogram.Observe(time.Since(tracer.stamp).Seconds())
-		}
-		_, tracer.task = trace.NewTask(context.Background(), "6-Prepared")
-		tracer.stamp = time.Now()
-		tracer.state = 5
+	case txnif.TraceAfterFreeze:
+		tracer.startTask(0, "1-PreparingWait", now)
+	case txnif.TracePreWal:
+		tracer.advanceTask(0, 1, "2-Preparing", now, v2.TxnPreparingWaitDurationHistogram)
+	case txnif.TracePreWalDone:
+		tracer.advanceTask(1, 2, "3-PrepareWalWait", now, v2.TxnPreparingDurationHistogram)
+	case txnif.TraceOnWal:
+		tracer.advanceTask(2, 3, "4-PrepareWal", now, v2.TxnPrepareWalWaitDurationHistogram)
+	case txnif.TracePostWal:
+		tracer.advanceTask(3, 4, "5-PreparedWait", now, v2.TxnPrepareWalDurationHistogram)
+	case txnif.TraceOnApply:
+		tracer.advanceTask(4, 5, "6-Prepared", now, v2.TxnPreparedWaitDurationHistogram)
 	}
 }
 
-func (tracer *txnTracer) Stop() {
-	if tracer.task != nil && tracer.state == 5 {
-		tracer.task.End()
-		v2.TxnPreparedDurationHistogram.Observe(time.Since(tracer.stamp).Seconds())
+func (tracer *txnTracer) recordProfileTransition(state uint8, now time.Time) {
+	if state == txnif.TraceStart {
+		tracer.profileState = txnif.TraceStart
+		tracer.profileStamp = now
+		return
 	}
+	if tracer.profileStamp.IsZero() || state != tracer.profileState+1 {
+		return
+	}
+	idx := int(tracer.profileState)
+	tracer.profileDurations[idx] = now.Sub(tracer.profileStamp)
+	tracer.profileSeen[idx] = true
+	tracer.profileState = state
+	tracer.profileStamp = now
+}
+
+func (tracer *txnTracer) startTask(state uint8, name string, now time.Time) {
+	if tracer.task != nil {
+		tracer.task.End()
+	}
+	_, tracer.task = trace.NewTask(context.Background(), name)
+	tracer.state = state
+	tracer.stamp = now
+}
+
+func (tracer *txnTracer) advanceTask(
+	from, to uint8,
+	name string,
+	now time.Time,
+	observer interface{ Observe(float64) },
+) {
+	if tracer.task == nil || tracer.state != from {
+		return
+	}
+	tracer.task.End()
+	observer.Observe(now.Sub(tracer.stamp).Seconds())
+	_, tracer.task = trace.NewTask(context.Background(), name)
+	tracer.state = to
+	tracer.stamp = now
+}
+
+func (tracer *txnTracer) Stop() {
+	if tracer.task != nil {
+		tracer.task.End()
+		if tracer.state == 5 {
+			v2.TxnPreparedDurationHistogram.Observe(time.Since(tracer.stamp).Seconds())
+		}
+	}
+	tracer.observeProfileDurations()
 	tracer.task = nil
 	tracer.state = 0
+}
+
+func (tracer *txnTracer) observeProfileDurations() {
+	observers := [...]interface{ Observe(float64) }{
+		v2.TxnCommit1PCFreezeDurationHistogram,
+		v2.TxnCommit1PCPreWalQueueDurationHistogram,
+		v2.TxnCommit1PCPreWalWorkDurationHistogram,
+		v2.TxnCommit1PCWalQueueDurationHistogram,
+		v2.TxnCommit1PCWalWorkDurationHistogram,
+		v2.TxnCommit1PCApplyQueueDurationHistogram,
+		v2.TxnCommit1PCWorkerQueueDurationHistogram,
+		v2.TxnCommit1PCTableWalSyncDurationHistogram,
+		v2.TxnCommit1PCWalDurableDurationHistogram,
+		v2.TxnCommit1PCTailCompleteDurationHistogram,
+		v2.TxnCommit1PCApplyCommitDurationHistogram,
+		v2.TxnCommit1PCDoneApplyDurationHistogram,
+	}
+	for idx, observer := range observers {
+		if tracer.profileSeen[idx] {
+			observer.Observe(tracer.profileDurations[idx].Seconds())
+		}
+	}
 }
 
 type txnStore struct {
@@ -779,6 +814,7 @@ func (store *txnStore) WaitWalAndTail(ctx context.Context) (err error) {
 			return
 		}
 	}
+	store.TriggerTrace(txnif.TraceTableWalDone)
 	moprobe.WithRegion(ctx, moprobe.TxnStoreWaitWALFlush, func() {
 		for _, e := range store.logs {
 			if waitErr := e.WaitDone(); waitErr != nil && err == nil {
@@ -787,8 +823,10 @@ func (store *txnStore) WaitWalAndTail(ctx context.Context) (err error) {
 			e.Free()
 		}
 	})
+	store.TriggerTrace(txnif.TraceWalDurableDone)
 
 	store.WaitEvent(txnif.TailCollecting)
+	store.TriggerTrace(txnif.TraceTailDone)
 	return
 }
 
