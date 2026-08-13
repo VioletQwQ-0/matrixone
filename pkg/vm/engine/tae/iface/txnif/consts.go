@@ -114,8 +114,16 @@ const (
 
 const (
 	TraceStart = iota
+	TraceAfterFreeze
 	TracePreWal
+	TracePreWalDone
 	TraceOnWal
 	TracePostWal
 	TraceOnApply
+	TraceApplyWorker
+	TraceTableWalDone
+	TraceWalDurableDone
+	TraceTailDone
+	TraceApplyCommitDone
+	TraceDoneApply
 )
