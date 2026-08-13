@@ -52,7 +52,7 @@ type TableChangeQuery struct {
 	Ts           timestamp.Timestamp
 }
 
-const tableChangeBucketCount = 4096
+const schemaChangeBucketCount = 4096
 
 // catalog cache
 type CatalogCache struct {
@@ -61,13 +61,14 @@ type CatalogCache struct {
 		start types.TS
 		end   types.TS
 	}
-	gcMu        sync.Mutex
-	tableChange struct {
+	gcMu         sync.Mutex
+	schemaChange struct {
 		sync.RWMutex
-		// Account IDs hash into a fixed number of monotonic high-watermark
+		// Account IDs hash into a fixed number of monotonic schema-change
+		// high-watermark
 		// buckets. Collisions can only cause conservative replanning; they
 		// cannot hide a change, and memory use is independent of tenant churn.
-		byAccount [tableChangeBucketCount]timestamp.Timestamp
+		byAccount [schemaChangeBucketCount]timestamp.Timestamp
 	}
 	preparedMetadata struct {
 		sync.RWMutex

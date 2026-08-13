@@ -129,20 +129,22 @@ func TestCrossAccGet(t *testing.T) {
 
 func TestHasNewerVersion(t *testing.T) {
 	cc := NewCatalog()
-	cc.tables.data.Set(&TableItem{
+	cc.setTableItem(&TableItem{
 		AccountId:  1,
 		DatabaseId: 2,
 		Name:       "t",
 		Id:         3,
 		Version:    2,
 		Ts:         timestamp.Timestamp{PhysicalTime: 200},
-	})
+	}, true)
 
 	require.True(t, cc.HasNewerVersion(&TableChangeQuery{
 		AccountId: 1, DatabaseId: 2, Name: "t", TableId: 3, Version: 1,
 		Ts: timestamp.Timestamp{PhysicalTime: 100},
 	}))
-	require.False(t, cc.HasNewerVersion(&TableChangeQuery{
+	// The account watermark deliberately permits conservative replanning when
+	// the cached dependency itself did not change.
+	require.True(t, cc.HasNewerVersion(&TableChangeQuery{
 		AccountId: 1, DatabaseId: 2, Name: "t", TableId: 3, Version: 2,
 		Ts: timestamp.Timestamp{PhysicalTime: 100},
 	}))
@@ -154,9 +156,9 @@ func TestHasNewerVersion(t *testing.T) {
 
 func TestHasNewerVersionDetectsDatabaseRecreation(t *testing.T) {
 	cc := NewCatalog()
-	cc.databases.data.Set(&DatabaseItem{
+	cc.setDatabaseItem(&DatabaseItem{
 		AccountId: 1, Name: "db", Id: 20, Ts: timestamp.Timestamp{PhysicalTime: 200},
-	})
+	}, true)
 	require.True(t, cc.HasNewerVersion(&TableChangeQuery{
 		AccountId: 1, DatabaseId: 10, DatabaseName: "db", Name: "missing",
 		Ts: timestamp.Timestamp{PhysicalTime: 100},
@@ -173,7 +175,7 @@ func TestHasNewerVersionDetectsAnyTableChange(t *testing.T) {
 		AccountId: 1, DatabaseId: 10, Name: "new_child", Id: 20,
 		Ts: timestamp.Timestamp{PhysicalTime: 200},
 	}, true)
-	require.False(t, cc.HasNewerVersion(&TableChangeQuery{
+	require.True(t, cc.HasNewerVersion(&TableChangeQuery{
 		AccountId: 1, DatabaseId: 10, Name: "", Ts: timestamp.Timestamp{PhysicalTime: 100},
 	}))
 	require.False(t, cc.HasNewerVersion(&TableChangeQuery{
@@ -186,7 +188,7 @@ func TestHasNewerVersionDetectsAnyTableChange(t *testing.T) {
 		AccountId: 2, DatabaseId: 0, Name: "", Ts: timestamp.Timestamp{PhysicalTime: 100},
 	}))
 
-	// Account-level dependencies use the high-watermark rather than walking
+	// All prepared dependencies use the high-watermark rather than walking
 	// retained table versions. A direct BTree insertion intentionally bypasses
 	// the production update path and therefore must not affect the result.
 	cc.tables.data.Set(&TableItem{
@@ -207,17 +209,106 @@ func TestHasNewerVersionDetectsAnyTableChange(t *testing.T) {
 	}))
 }
 
-func TestAccountTableChangeHighWatermarkConcurrent(t *testing.T) {
+func TestSchemaChangeHighWatermarkIncludesDatabaseChanges(t *testing.T) {
+	cc := NewCatalog()
+	cc.setDatabaseItem(&DatabaseItem{
+		AccountId: 7, Name: "db", Id: 10,
+		Ts: timestamp.Timestamp{PhysicalTime: 100},
+	}, true)
+	require.True(t, cc.HasNewerVersion(&TableChangeQuery{
+		AccountId: 7, DatabaseId: 10, DatabaseName: "db",
+		Ts: timestamp.Timestamp{PhysicalTime: 99},
+	}))
+	require.False(t, cc.HasNewerVersion(&TableChangeQuery{
+		AccountId: 7, DatabaseId: 10, DatabaseName: "db",
+		Ts: timestamp.Timestamp{PhysicalTime: 100},
+	}))
+
+	cc.setDatabaseItem(&DatabaseItem{
+		AccountId: 7, Name: "db", Id: 10, deleted: true,
+		Ts: timestamp.Timestamp{PhysicalTime: 200},
+	}, false)
+	require.True(t, cc.HasNewerVersion(&TableChangeQuery{
+		AccountId: 7, DatabaseId: 10, DatabaseName: "db",
+		Ts: timestamp.Timestamp{PhysicalTime: 199},
+	}))
+
+	cc.setDatabaseItem(&DatabaseItem{
+		AccountId: 7, Name: "db", Id: 11,
+		Ts: timestamp.Timestamp{PhysicalTime: 300},
+	}, true)
+	require.True(t, cc.HasNewerVersion(&TableChangeQuery{
+		AccountId: 7, DatabaseId: 10, DatabaseName: "db",
+		Ts: timestamp.Timestamp{PhysicalTime: 299},
+	}))
+}
+
+func TestSchemaChangeHighWatermarkIncludesTableLifecycle(t *testing.T) {
+	cc := NewCatalog()
+	accountID := uint32(7)
+	queryAt := func(physicalTime int64) bool {
+		return cc.HasNewerVersion(&TableChangeQuery{
+			AccountId: accountID,
+			Ts:        timestamp.Timestamp{PhysicalTime: physicalTime},
+		})
+	}
+
+	// Create, alter, drop, recreate, and truncate are all represented by a
+	// newer catalog table version. Each publication must advance the schema
+	// watermark regardless of whether identity or version changes.
+	changes := []*TableItem{
+		{AccountId: accountID, DatabaseId: 10, Name: "t", Id: 20, Version: 1, Ts: timestamp.Timestamp{PhysicalTime: 100}},
+		{AccountId: accountID, DatabaseId: 10, Name: "t", Id: 20, Version: 2, Ts: timestamp.Timestamp{PhysicalTime: 200}},
+		{AccountId: accountID, DatabaseId: 10, Name: "t", Id: 20, Version: 2, deleted: true, Ts: timestamp.Timestamp{PhysicalTime: 300}},
+		{AccountId: accountID, DatabaseId: 10, Name: "t", Id: 21, Version: 1, Ts: timestamp.Timestamp{PhysicalTime: 400}},
+		{AccountId: accountID, DatabaseId: 10, Name: "t", Id: 22, Version: 1, Ts: timestamp.Timestamp{PhysicalTime: 500}},
+	}
+	for _, change := range changes {
+		cc.setTableItem(change, !change.deleted)
+		require.True(t, queryAt(change.Ts.PhysicalTime-1))
+		require.False(t, queryAt(change.Ts.PhysicalTime))
+	}
+}
+
+func TestSchemaChangeHighWatermarkReplayIsMonotonic(t *testing.T) {
+	cc := NewCatalog()
+	cc.setTableItem(&TableItem{
+		AccountId: 9, DatabaseId: 10, Name: "t", Id: 20,
+		Ts: timestamp.Timestamp{PhysicalTime: 500},
+	}, true)
+
+	// Cache replay can deliver an older catalog version after a newer one.
+	// It must not lower the already observed schema-change watermark.
+	cc.setDatabaseItem(&DatabaseItem{
+		AccountId: 9, Name: "db", Id: 10,
+		Ts: timestamp.Timestamp{PhysicalTime: 100},
+	}, true)
+	require.True(t, cc.HasNewerVersion(&TableChangeQuery{
+		AccountId: 9, Ts: timestamp.Timestamp{PhysicalTime: 499},
+	}))
+	require.False(t, cc.HasNewerVersion(&TableChangeQuery{
+		AccountId: 9, Ts: timestamp.Timestamp{PhysicalTime: 500},
+	}))
+}
+
+func TestSchemaChangeHighWatermarkConcurrent(t *testing.T) {
 	cc := NewCatalog()
 	var wg sync.WaitGroup
 	for i := 1; i <= 64; i++ {
 		wg.Add(1)
 		go func(physicalTime int64) {
 			defer wg.Done()
-			cc.setTableItem(&TableItem{
-				AccountId: 1, DatabaseId: uint64(physicalTime), Name: "t",
-				Ts: timestamp.Timestamp{PhysicalTime: physicalTime},
-			}, true)
+			if physicalTime%2 == 0 {
+				cc.setTableItem(&TableItem{
+					AccountId: 1, DatabaseId: uint64(physicalTime), Name: "t",
+					Ts: timestamp.Timestamp{PhysicalTime: physicalTime},
+				}, true)
+			} else {
+				cc.setDatabaseItem(&DatabaseItem{
+					AccountId: 1, Name: "db",
+					Ts: timestamp.Timestamp{PhysicalTime: physicalTime},
+				}, true)
+			}
 		}(int64(i))
 	}
 	wg.Wait()
@@ -249,7 +340,7 @@ func TestPreparedMetadataHighWatermark(t *testing.T) {
 	require.Equal(t, expected, cc.GetPreparedMetadataTS())
 }
 
-func TestAccountTableChangeHighWatermarkCollisionIsConservative(t *testing.T) {
+func TestSchemaChangeHighWatermarkCollisionIsConservative(t *testing.T) {
 	cc := NewCatalog()
 	cc.setTableItem(&TableItem{
 		AccountId: 1, DatabaseId: 10, Name: "t",
@@ -259,9 +350,53 @@ func TestAccountTableChangeHighWatermarkCollisionIsConservative(t *testing.T) {
 	// A colliding account may rebuild conservatively, but it must never miss
 	// the bucket's latest table change.
 	require.True(t, cc.HasNewerVersion(&TableChangeQuery{
-		AccountId: 1 + tableChangeBucketCount, DatabaseId: 0,
+		AccountId: 1 + schemaChangeBucketCount, DatabaseId: 0,
 		Ts: timestamp.Timestamp{PhysicalTime: 1},
 	}))
+}
+
+func TestSchemaChangeHighWatermarkSurvivesGC(t *testing.T) {
+	cc := NewCatalog()
+	cc.setTableItem(&TableItem{
+		AccountId: 3, DatabaseId: 10, Name: "t", Id: 20,
+		Ts: timestamp.Timestamp{PhysicalTime: 100},
+	}, true)
+	cc.GC(timestamp.Timestamp{PhysicalTime: 200})
+	require.True(t, cc.HasNewerVersion(&TableChangeQuery{
+		AccountId: 3, Ts: timestamp.Timestamp{PhysicalTime: 99},
+	}))
+}
+
+func TestHasNewerVersionDoesNotAllocate(t *testing.T) {
+	cc := NewCatalog()
+	cc.setTableItem(&TableItem{
+		AccountId: 1, DatabaseId: 2, Name: "t", Id: 3,
+		Ts: timestamp.Timestamp{PhysicalTime: 100},
+	}, true)
+	qry := &TableChangeQuery{
+		AccountId: 1, DatabaseId: 2, DatabaseName: "db", Name: "t",
+		TableId: 3, Version: 1, Ts: timestamp.Timestamp{PhysicalTime: 100},
+	}
+	require.Zero(t, testing.AllocsPerRun(1000, func() {
+		_ = cc.HasNewerVersion(qry)
+	}))
+}
+
+func BenchmarkHasNewerVersionNoChange(b *testing.B) {
+	cc := NewCatalog()
+	cc.setTableItem(&TableItem{
+		AccountId: 1, DatabaseId: 2, Name: "t", Id: 3,
+		Ts: timestamp.Timestamp{PhysicalTime: 100},
+	}, true)
+	qry := &TableChangeQuery{
+		AccountId: 1, DatabaseId: 2, DatabaseName: "db", Name: "t",
+		TableId: 3, Version: 1, Ts: timestamp.Timestamp{PhysicalTime: 100},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = cc.HasNewerVersion(qry)
+	}
 }
 
 func TestTables(t *testing.T) {
