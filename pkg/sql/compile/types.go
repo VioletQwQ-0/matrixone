@@ -138,6 +138,7 @@ type Source struct {
 	FilterExpr      *plan.Expr   // todo: change this to []*plan.Expr,  is FilterList + RuntimeFilter
 	FilterList      []*plan.Expr //from node.FilterList, use for reader
 	BlockFilterList []*plan.Expr //from node.BlockFilterList, use for range
+	PrimaryKeyHint  engine.PrimaryKeyHint
 	node            *plan.Node
 	TableDef        *plan.TableDef
 	Timestamp       timestamp.Timestamp

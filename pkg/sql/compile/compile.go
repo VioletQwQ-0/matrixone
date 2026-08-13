@@ -95,6 +95,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/disttae"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine/readutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/message"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"github.com/panjf2000/ants/v2"
@@ -3868,6 +3869,14 @@ func (c *Compile) compileTableScanDataSource(s *Scope) error {
 		}
 	}
 	s.DataSource.FilterExpr = colexec.RewriteFilterExprList(s.DataSource.FilterList)
+	s.DataSource.PrimaryKeyHint, err = readutil.BuildPrimaryKeyHint(
+		s.DataSource.FilterExpr,
+		tblDef,
+		c.proc.Mp(),
+	)
+	if err != nil {
+		return err
+	}
 
 	if len(node.BlockFilterList) != len(s.DataSource.BlockFilterList) {
 		s.DataSource.BlockFilterList = plan2.DeepCopyExprList(node.BlockFilterList)
@@ -6766,7 +6775,8 @@ func logCatalogSnapshotScan(tag string, node *plan.Node, ctx context.Context, tx
 
 func (c *Compile) expandRanges(
 	node *plan.Node, rel engine.Relation, db engine.Database, ctx context.Context,
-	blockFilterList []*plan.Expr, policy engine.DataCollectPolicy, rsp *engine.RangesShuffleParam) (engine.RelData, error) {
+	blockFilterList []*plan.Expr, primaryKeyHint engine.PrimaryKeyHint,
+	policy engine.DataCollectPolicy, rsp *engine.RangesShuffleParam) (engine.RelData, error) {
 
 	preAllocBlocks := 2
 	if policy&engine.Policy_CollectCommittedPersistedData != 0 {
@@ -6786,6 +6796,7 @@ func (c *Compile) expandRanges(
 	newCtx := perfcounter.AttachS3RequestKey(ctx, counterSet)
 	rangesParam := engine.RangesParam{
 		BlockFilters:       blockFilterList,
+		PrimaryKeyHint:     primaryKeyHint,
 		PreAllocBlocks:     preAllocBlocks,
 		TxnOffset:          c.TxnOffset,
 		Policy:             policy,

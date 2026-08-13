@@ -273,9 +273,14 @@ func TryFastFilterBlocksWithZone(
 	fs fileservice.FileService,
 	zone *time.Location,
 ) (ok bool, err error) {
-	fastFilterOp, loadOp, objectFilterOp, blockFilterOp, seekOp, ok, highSelectivityHint := compileFilterExprs(
-		rangesParam.BlockFilters, tableDef, fs, zone,
+	fastFilterOp, loadOp, objectFilterOp, blockFilterOp, seekOp, ok, highSelectivityHint := compilePrimaryKeyHint(
+		rangesParam.PrimaryKeyHint, tableDef, fs,
 	)
+	if !ok {
+		fastFilterOp, loadOp, objectFilterOp, blockFilterOp, seekOp, ok, highSelectivityHint = compileFilterExprs(
+			rangesParam.BlockFilters, tableDef, fs, zone,
+		)
+	}
 	if !ok {
 		return false, nil
 	}

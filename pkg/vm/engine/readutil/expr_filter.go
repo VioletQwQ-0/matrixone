@@ -25,6 +25,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
 )
 
@@ -699,6 +700,127 @@ func CompileFilterExprs(
 	highSelectivityHint bool,
 ) {
 	return compileFilterExprs(exprs, tableDef, fs, nil)
+}
+
+func compilePrimaryKeyHint(
+	hint engine.PrimaryKeyHint,
+	tableDef *plan.TableDef,
+	fs fileservice.FileService,
+) (
+	fastFilterOp FastFilterOp,
+	loadOp LoadOp,
+	objectFilterOp ObjectFilterOp,
+	blockFilterOp BlockFilterOp,
+	seekOp SeekFirstBlockOp,
+	canCompile bool,
+	highSelectivityHint bool,
+) {
+	colDef := primaryKeyColumn(tableDef)
+	if !validPrimaryKeyHint(hint, colDef) {
+		return nil, nil, nil, nil, nil, false, false
+	}
+	return compileEqualFilter(
+		hint.Value,
+		nil,
+		colDef,
+		colDef.Name != catalog.FakePrimaryKeyColName,
+		fs,
+	)
+}
+
+func compileEqualFilter(
+	value []byte,
+	bound objectio.ZoneMap,
+	colDef *plan.ColDef,
+	forcePrimary bool,
+	fs fileservice.FileService,
+) (
+	fastFilterOp FastFilterOp,
+	loadOp LoadOp,
+	objectFilterOp ObjectFilterOp,
+	blockFilterOp BlockFilterOp,
+	seekOp SeekFirstBlockOp,
+	canCompile bool,
+	highSelectivityHint bool,
+) {
+	if colDef == nil {
+		return nil, nil, nil, nil, nil, false, false
+	}
+	canCompile = true
+	isPK, isSorted := isSortedKey(colDef)
+	if forcePrimary {
+		isPK = true
+		isSorted = true
+	}
+	columnType := types.T(colDef.Typ.Id)
+	if isSorted {
+		fastFilterOp = func(obj *objectio.ObjectStats) (bool, error) {
+			if obj.ZMIsEmpty() {
+				return true, nil
+			}
+			return intersectsBound(obj.SortKeyZoneMap(), value, bound, columnType).mayMatch(), nil
+		}
+	}
+	if isPK {
+		loadOp = loadMetadataAndBFOpFactory(fs)
+	} else {
+		loadOp = loadMetadataOnlyOpFactory(fs)
+	}
+
+	highSelectivityHint = isPK
+	seqNum := colDef.Seqnum
+	objectFilterOp = func(meta objectio.ObjectMeta, _ objectio.BloomFilter) (bool, error) {
+		if isSorted {
+			return true, nil
+		}
+		dataMeta := meta.MustDataMeta()
+		return intersectsBound(
+			dataMeta.MustGetColumn(uint16(seqNum)).ZoneMap(), value, bound, columnType,
+		).mayMatch(), nil
+	}
+	blockFilterOp = func(
+		blkIdx int, blkMeta objectio.BlockObject, bf objectio.BloomFilter,
+	) (bool, bool, error) {
+		var can, ok bool
+		zm := blkMeta.MustGetColumn(uint16(seqNum)).ZoneMap()
+		intersection := intersectsBound(zm, value, bound, columnType)
+		if isSorted {
+			can = anyLEByBound(zm, value, bound, columnType).excludes()
+			if can {
+				ok = false
+			} else {
+				ok = intersection.mayMatch()
+			}
+		} else {
+			ok = intersection.mayMatch()
+		}
+		if !ok {
+			return can, false, nil
+		}
+		// Bloom keys are raw encoded values and carry no scale. A decimal
+		// bound with a different persisted scale cannot be queried safely.
+		if isPK && intersection.comparable && (bound == nil ||
+			(bound.GetType() == zm.GetType() && bound.GetScale() == zm.GetScale())) {
+			var blkBF index.BloomFilter
+			buf := bf.GetBloomFilter(uint32(blkIdx))
+			if err := blkBF.Unmarshal(buf); err != nil {
+				return false, false, err
+			}
+			exist, err := blkBF.MayContainsKey(value)
+			if err != nil || !exist {
+				return false, false, err
+			}
+		}
+		return false, true, nil
+	}
+	if isSorted {
+		seekOp = func(meta objectio.ObjectDataMeta) int {
+			return seekFirstBlockByZoneMap(meta, uint16(seqNum), bound, columnType, func(zm objectio.ZoneMap) zoneMapMatch {
+				return anyGEByBound(zm, value, bound, columnType)
+			})
+		}
+	}
+	return
 }
 
 func compileFilterExprs(
@@ -1704,78 +1826,7 @@ func compileFilterExpr(
 				canCompile = false
 				return
 			}
-			isPK, isSorted := isSortedKey(colDef)
-			if isSorted {
-				fastFilterOp = func(obj *objectio.ObjectStats) (bool, error) {
-					if obj.ZMIsEmpty() {
-						return true, nil
-					}
-					return intersectsBound(obj.SortKeyZoneMap(), vals[0], bound, types.T(colDef.Typ.Id)).mayMatch(), nil
-				}
-			}
-			if isPK {
-				loadOp = loadMetadataAndBFOpFactory(fs)
-			} else {
-				loadOp = loadMetadataOnlyOpFactory(fs)
-			}
-
-			highSelectivityHint = isPK
-
-			seqNum := colDef.Seqnum
-			objectFilterOp = func(meta objectio.ObjectMeta, _ objectio.BloomFilter) (bool, error) {
-				if isSorted {
-					return true, nil
-				}
-				dataMeta := meta.MustDataMeta()
-				return intersectsBound(
-					dataMeta.MustGetColumn(uint16(seqNum)).ZoneMap(), vals[0], bound, types.T(colDef.Typ.Id),
-				).mayMatch(), nil
-			}
-			blockFilterOp = func(
-				blkIdx int, blkMeta objectio.BlockObject, bf objectio.BloomFilter,
-			) (bool, bool, error) {
-				var (
-					can, ok bool
-				)
-				zm := blkMeta.MustGetColumn(uint16(seqNum)).ZoneMap()
-				intersection := intersectsBound(zm, vals[0], bound, types.T(colDef.Typ.Id))
-				if isSorted {
-					can = anyLEByBound(zm, vals[0], bound, types.T(colDef.Typ.Id)).excludes()
-					if can {
-						ok = false
-					} else {
-						ok = intersection.mayMatch()
-					}
-				} else {
-					can = false
-					ok = intersection.mayMatch()
-				}
-				if !ok {
-					return can, ok, nil
-				}
-				// Bloom keys are raw encoded values and carry no scale. A decimal
-				// bound with a different persisted scale cannot be queried safely.
-				if isPK && intersection.comparable && (bound == nil ||
-					(bound.GetType() == zm.GetType() && bound.GetScale() == zm.GetScale())) {
-					var blkBF index.BloomFilter
-					buf := bf.GetBloomFilter(uint32(blkIdx))
-					if err := blkBF.Unmarshal(buf); err != nil {
-						return false, false, err
-					}
-					exist, err := blkBF.MayContainsKey(vals[0])
-					if err != nil || !exist {
-						return false, false, err
-					}
-				}
-				return false, true, nil
-			}
-			if isSorted {
-				seekOp = func(meta objectio.ObjectDataMeta) int {
-					return seekFirstBlockByZoneMap(meta, uint16(seqNum), bound, types.T(colDef.Typ.Id), func(zm objectio.ZoneMap) zoneMapMatch {
-						return anyGEByBound(zm, vals[0], bound, types.T(colDef.Typ.Id))
-					})
-				}
-			}
+			return compileEqualFilter(vals[0], bound, colDef, false, fs)
 		default:
 			canCompile = false
 		}

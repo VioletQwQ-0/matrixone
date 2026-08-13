@@ -910,6 +910,7 @@ func (s *Scope) getRelData(c *Compile, blockExprList []*plan.Expr) error {
 			db,
 			ctx,
 			blockExprList,
+			s.DataSource.PrimaryKeyHint,
 			engine.Policy_CollectAllData,
 			rsp)
 		if err != nil {
@@ -947,6 +948,7 @@ func (s *Scope) getRelData(c *Compile, blockExprList []*plan.Expr) error {
 			db,
 			ctx,
 			blockExprList,
+			s.DataSource.PrimaryKeyHint,
 			policyForLocal,
 			rsp,
 		)
@@ -961,6 +963,7 @@ func (s *Scope) getRelData(c *Compile, blockExprList []*plan.Expr) error {
 		db,
 		ctx,
 		blockExprList,
+		s.DataSource.PrimaryKeyHint,
 		policyForRemote,
 		rsp,
 	)
@@ -1609,7 +1612,7 @@ func (s *Scope) buildReaders(c *Compile) (readers []engine.Reader, err error) {
 		if s.DataSource.AccountId != nil {
 			ctx = defines.AttachAccountId(ctx, uint32(s.DataSource.AccountId.GetTenantId()))
 		}
-		hint := engine.FilterHint{}
+		hint := engine.FilterHint{PrimaryKey: s.DataSource.PrimaryKeyHint}
 		if tableDef := s.DataSource.TableDef; tableDef != nil {
 			switch {
 			case tableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries:
@@ -1646,7 +1649,7 @@ func (s *Scope) buildReaders(c *Compile) (readers []engine.Reader, err error) {
 		crs := new(perfcounter.CounterSet)
 		newCtx := perfcounter.AttachS3RequestKey(ctx, crs)
 
-		hint := engine.FilterHint{}
+		hint := engine.FilterHint{PrimaryKey: s.DataSource.PrimaryKeyHint}
 		// Pass runtime membership filter bytes to reader via FilterHint (only for ivf entries table).
 		if n := s.DataSource.node; n != nil && n.TableDef != nil &&
 			n.TableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries {
@@ -1731,7 +1734,7 @@ func (s *Scope) buildReaders(c *Compile) (readers []engine.Reader, err error) {
 		crs := new(perfcounter.CounterSet)
 		newCtx := perfcounter.AttachS3RequestKey(ctx, crs)
 
-		hint := engine.FilterHint{}
+		hint := engine.FilterHint{PrimaryKey: s.DataSource.PrimaryKeyHint}
 		if n := s.DataSource.node; n != nil && n.TableDef != nil &&
 			n.TableDef.TableType == catalog.SystemSI_IVFFLAT_TblType_Entries {
 			if len(s.DataSource.MembershipFilterBytes) > 0 {

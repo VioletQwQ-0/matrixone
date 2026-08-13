@@ -1052,8 +1052,9 @@ type RangesShuffleParam struct {
 
 type RangesParam struct {
 	BlockFilters       []*plan.Expr //Slice of expressions used to filter zonemap
-	PreAllocBlocks     int          //estimated count of blocks
-	TxnOffset          int          //Transaction offset used to specify the starting position for reading data.
+	PrimaryKeyHint     PrimaryKeyHint
+	PreAllocBlocks     int //estimated count of blocks
+	TxnOffset          int //Transaction offset used to specify the starting position for reading data.
 	Policy             DataCollectPolicy
 	Rsp                *RangesShuffleParam
 	DontSupportRelData bool
@@ -1515,4 +1516,14 @@ type FilterHint struct {
 	Must                  bool
 	MembershipFilterBytes []byte
 	BF                    MembershipFilter
+	PrimaryKey            PrimaryKeyHint
+}
+
+// PrimaryKeyHint is an execution-local, immutable copy of a folded exact
+// primary-key equality. It is only a pruning hint; the original filter
+// expression remains the source of query semantics.
+type PrimaryKeyHint struct {
+	Valid bool
+	Value []byte
+	Oid   types.T
 }

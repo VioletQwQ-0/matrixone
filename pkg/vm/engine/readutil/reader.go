@@ -487,13 +487,16 @@ func NewReader(
 		}
 	}()
 
-	baseFilter, err := ConstructBasePKFilter(
-		expr,
-		tableDef,
-		mp,
-	)
-	if err != nil {
-		return nil, err
+	baseFilter := basePKFilterFromHint(filterHint.PrimaryKey, tableDef)
+	if !baseFilter.Valid {
+		baseFilter, err = ConstructBasePKFilter(
+			expr,
+			tableDef,
+			mp,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	memFilter, err := NewMemPKFilter(

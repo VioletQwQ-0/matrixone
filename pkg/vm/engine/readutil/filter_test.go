@@ -38,6 +38,7 @@ import (
 	plan2 "github.com/matrixorigin/matrixone/pkg/sql/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/function"
 	"github.com/matrixorigin/matrixone/pkg/testutil"
+	"github.com/matrixorigin/matrixone/pkg/vm/engine"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/containers"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/index"
@@ -302,6 +303,220 @@ func foldExpressionForTest(t *testing.T, proc *process.Process, expr *plan.Expr)
 	for _, executor := range executors {
 		t.Cleanup(executor.Free)
 	}
+}
+
+func TestBuildPrimaryKeyHint(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+	tableDef := &plan.TableDef{
+		Name:          "hint_test",
+		Name2ColIndex: map[string]int32{"id": 0, "payload": 1},
+		Cols: []*plan.ColDef{
+			{
+				Name: "id", Seqnum: 0,
+				Typ: plan.Type{Id: int32(types.T_int64)},
+			},
+			{
+				Name: "payload", Seqnum: 1,
+				Typ: plan.Type{Id: int32(types.T_int64)},
+			},
+		},
+		Pkey: &plan.PrimaryKeyDef{Names: []string{"id"}, PkeyColName: "id"},
+	}
+	makeExpr := func(t *testing.T, op, column string, oid types.T, value *plan.Expr) *plan.Expr {
+		t.Helper()
+		expr := MakeFunctionExprForTest(op, []*plan.Expr{
+			MakeColExprForTest(tableDef.Name2ColIndex[column], oid, column),
+			value,
+		})
+		foldExpressionForTest(t, proc, expr)
+		return expr
+	}
+
+	t.Run("owned exact equality", func(t *testing.T) {
+		expr := makeExpr(t, "=", "id", types.T_int64, plan2.MakePlan2Int64ConstExprWithType(42))
+		hint, err := BuildPrimaryKeyHint(expr, tableDef, proc.Mp())
+		require.NoError(t, err)
+		require.True(t, hint.Valid)
+		require.Equal(t, types.T_int64, hint.Oid)
+		want := append([]byte(nil), hint.Value...)
+
+		fold := expr.GetF().Args[1].GetFold()
+		require.NotNil(t, fold)
+		next := int64(43)
+		copy(fold.Data, types.EncodeInt64(&next))
+		require.Equal(t, want, hint.Value, "hint must not alias reusable Fold storage")
+
+		nextHint, err := BuildPrimaryKeyHint(expr, tableDef, proc.Mp())
+		require.NoError(t, err)
+		require.True(t, nextHint.Valid)
+		require.Equal(t, types.EncodeInt64(&next), nextHint.Value)
+		require.Equal(t, want, hint.Value, "rebuilding a source must not mutate its prior generation")
+	})
+
+	t.Run("unsupported predicates fail open", func(t *testing.T) {
+		tests := []struct {
+			name string
+			expr *plan.Expr
+		}{
+			{
+				name: "range",
+				expr: makeExpr(t, ">=", "id", types.T_int64, plan2.MakePlan2Int64ConstExprWithType(42)),
+			},
+			{
+				name: "non primary key",
+				expr: makeExpr(t, "=", "payload", types.T_int64, plan2.MakePlan2Int64ConstExprWithType(42)),
+			},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				hint, err := BuildPrimaryKeyHint(test.expr, tableDef, proc.Mp())
+				require.NoError(t, err)
+				require.False(t, hint.Valid)
+			})
+		}
+	})
+
+	t.Run("table without primary key fails open", func(t *testing.T) {
+		expr := makeExpr(t, "=", "id", types.T_int64, plan2.MakePlan2Int64ConstExprWithType(42))
+		withoutPrimaryKey := *tableDef
+		withoutPrimaryKey.Pkey = nil
+		hint, err := BuildPrimaryKeyHint(expr, &withoutPrimaryKey, proc.Mp())
+		require.NoError(t, err)
+		require.False(t, hint.Valid)
+	})
+
+	t.Run("decimal remains on expression path", func(t *testing.T) {
+		decimalTable := &plan.TableDef{
+			Name:          "decimal_hint_test",
+			Name2ColIndex: map[string]int32{"id": 0},
+			Cols: []*plan.ColDef{{
+				Name: "id", Seqnum: 0, Primary: true,
+				Typ: plan.Type{Id: int32(types.T_decimal64), Width: 18, Scale: 2},
+			}},
+			Pkey: &plan.PrimaryKeyDef{Names: []string{"id"}, PkeyColName: "id"},
+		}
+		value := types.Decimal64(123)
+		expr := MakeFunctionExprForTest("=", []*plan.Expr{
+			MakeColExprForTest(0, types.T_decimal64, "id"),
+			{
+				Typ: plan.Type{Id: int32(types.T_decimal64), Width: 18, Scale: 2},
+				Expr: &plan.Expr_Lit{Lit: &plan.Literal{
+					Value: &plan.Literal_Decimal64Val{Decimal64Val: &plan.Decimal64{A: int64(value)}},
+				}},
+			},
+		})
+		foldExpressionForTest(t, proc, expr)
+		hint, err := BuildPrimaryKeyHint(expr, decimalTable, proc.Mp())
+		require.NoError(t, err)
+		require.False(t, hint.Valid)
+	})
+}
+
+func TestCompilePrimaryKeyHintMatchesEqualityFastFilter(t *testing.T) {
+	tableDef := &plan.TableDef{
+		Name:          "hint_compile",
+		Name2ColIndex: map[string]int32{"id": 0},
+		Cols: []*plan.ColDef{{
+			// Hidden composite-PK columns are identified by TableDef.Pkey and
+			// are not necessarily marked Primary on the physical ColDef.
+			Name: "id", Seqnum: 0,
+			Typ: plan.Type{Id: int32(types.T_int64)},
+		}},
+		Pkey: &plan.PrimaryKeyDef{Names: []string{"id"}, PkeyColName: "id"},
+	}
+	value := int64(42)
+	hint := engine.PrimaryKeyHint{
+		Valid: true,
+		Value: append([]byte(nil), types.EncodeInt64(&value)...),
+		Oid:   types.T_int64,
+	}
+	fast, load, object, block, seek, canCompile, highSelectivity := compilePrimaryKeyHint(hint, tableDef, nil)
+	require.True(t, canCompile)
+	require.True(t, highSelectivity)
+	require.NotNil(t, fast)
+	require.NotNil(t, load)
+	require.NotNil(t, object)
+	require.NotNil(t, block)
+	require.NotNil(t, seek)
+
+	makeStats := func(t *testing.T, values ...int64) *objectio.ObjectStats {
+		t.Helper()
+		zm := index.NewZM(types.T_int64, 0)
+		for _, item := range values {
+			index.UpdateZM(zm, types.EncodeInt64(&item))
+		}
+		stats := objectio.NewObjectStats()
+		require.NoError(t, objectio.SetObjectStatsSortKeyZoneMap(stats, zm))
+		return stats
+	}
+
+	selected, err := fast(makeStats(t, 40, 50))
+	require.NoError(t, err)
+	require.True(t, selected)
+	selected, err = fast(makeStats(t, 50, 60))
+	require.NoError(t, err)
+	require.False(t, selected)
+
+	hint.Oid = types.T_int32
+	_, _, _, _, _, canCompile, _ = compilePrimaryKeyHint(hint, tableDef, nil)
+	require.False(t, canCompile, "a stale or mismatched hint must fall back to expressions")
+
+	hint.Oid = types.T_int64
+	hint.Value = []byte{42}
+	_, _, _, _, _, canCompile, _ = compilePrimaryKeyHint(hint, tableDef, nil)
+	require.False(t, canCompile, "a malformed hint must fall back to expressions")
+	require.False(t, basePKFilterFromHint(hint, tableDef).Valid)
+}
+
+func BenchmarkPrimaryKeyHintReaderSetup(b *testing.B) {
+	proc := testutil.NewProcess(b)
+	defer proc.Free()
+	tableDef := &plan.TableDef{
+		Name:          "hint_bench",
+		Name2ColIndex: map[string]int32{"id": 0},
+		Cols: []*plan.ColDef{{
+			Name: "id", Seqnum: 0, Primary: true,
+			Typ: plan.Type{Id: int32(types.T_int64)},
+		}},
+		Pkey: &plan.PrimaryKeyDef{Names: []string{"id"}, PkeyColName: "id"},
+	}
+	expr := MakeFunctionExprForTest("=", []*plan.Expr{
+		MakeColExprForTest(0, types.T_int64, "id"),
+		plan2.MakePlan2Int64ConstExprWithType(42),
+	})
+	var executors []colexec.ExpressionExecutor
+	_, err := plan2.ReplaceFoldExpr(proc, expr, &executors)
+	require.NoError(b, err)
+	require.NoError(b, plan2.EvalFoldExpr(proc, expr, &executors))
+	defer func() {
+		for _, executor := range executors {
+			executor.Free()
+		}
+	}()
+	hint, err := BuildPrimaryKeyHint(expr, tableDef, proc.Mp())
+	require.NoError(b, err)
+	require.True(b, hint.Valid)
+
+	b.Run("expression", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			filter, constructErr := ConstructBasePKFilter(expr, tableDef, proc.Mp())
+			if constructErr != nil {
+				b.Fatal(constructErr)
+			}
+			filter.Cleanup()
+		}
+	})
+	b.Run("hint", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			filter := basePKFilterFromHint(hint, tableDef)
+			if !filter.Valid {
+				b.Fatal("invalid hint filter")
+			}
+		}
+	})
 }
 
 func Test_ConstructBasePKFilter(t *testing.T) {
