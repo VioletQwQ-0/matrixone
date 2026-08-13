@@ -35,7 +35,7 @@ func preparedProtocolReason(cmd CommandType) string {
 // preparedPKAdmissionReason is profiling-only classification. It deliberately
 // accepts fewer plans than a future production specialization might support:
 // one ordinary table scan, no relational shape that can multiply/reorder rows,
-// and a physical primary-key equality whose value is execution-bound.
+// and a physical primary-key equality whose value is stable for the execution.
 func preparedPKAdmissionReason(p *plan.Plan) string {
 	query := p.GetQuery()
 	if query == nil {
@@ -135,67 +135,56 @@ func preparedCompositePKEquality(filters []*plan.Expr, bindingTag int32, colInde
 	}
 	cpkeyPos, hasCPKey := colIndex[catalog.CPrimaryKeyColName]
 	matched := make(map[int32]struct{}, len(required))
-	var visit func(*plan.Expr) bool
-	visit = func(expr *plan.Expr) bool {
+	var collect func(*plan.Expr)
+	collect = func(expr *plan.Expr) {
 		if expr == nil {
-			return false
+			return
 		}
 		fn := expr.GetF()
 		if fn == nil || fn.GetFunc() == nil {
-			return false
+			return
 		}
 		if strings.EqualFold(fn.GetFunc().GetObjName(), "and") {
-			if len(fn.GetArgs()) == 0 {
-				return false
-			}
 			for _, arg := range fn.GetArgs() {
-				if !visit(arg) {
-					return false
-				}
+				collect(arg)
 			}
-			return true
+			return
 		}
 		if len(fn.GetArgs()) != 2 || fn.GetFunc().GetObjName() != "=" {
-			return false
+			return
 		}
 		left, right := fn.GetArgs()[0], fn.GetArgs()[1]
 		if col := left.GetCol(); col != nil && col.GetRelPos() == bindingTag {
 			if _, ok := required[col.GetColPos()]; ok && preparedPKBoundValue(right) {
 				matched[col.GetColPos()] = struct{}{}
-				return true
+				return
 			}
 			if hasCPKey && col.GetColPos() == cpkeyPos &&
 				preparedCompositeBoundValue(right, len(pkNames)) {
 				for pos := range required {
 					matched[pos] = struct{}{}
 				}
-				return true
+				return
 			}
 		}
 		if col := right.GetCol(); col != nil && col.GetRelPos() == bindingTag {
 			if _, ok := required[col.GetColPos()]; ok && preparedPKBoundValue(left) {
 				matched[col.GetColPos()] = struct{}{}
-				return true
+				return
 			}
 			if hasCPKey && col.GetColPos() == cpkeyPos &&
 				preparedCompositeBoundValue(left, len(pkNames)) {
 				for pos := range required {
 					matched[pos] = struct{}{}
 				}
-				return true
+				return
 			}
 		}
-		return false
 	}
 	for _, filter := range filters {
-		if !visit(filter) {
-			continue
-		}
-		if len(matched) == len(required) {
-			return true
-		}
+		collect(filter)
 	}
-	return false
+	return len(matched) == len(required)
 }
 
 func preparedCompositeBoundValue(expr *plan.Expr, partCount int) bool {
@@ -210,7 +199,7 @@ func preparedCompositeBoundValue(expr *plan.Expr, partCount int) bool {
 		return false
 	}
 	name := strings.ToLower(fn.GetFunc().GetObjName())
-	if name != "serial" && name != "serial_full" || len(fn.GetArgs()) < partCount {
+	if name != "serial" && name != "serial_full" || len(fn.GetArgs()) != partCount {
 		return false
 	}
 	for _, arg := range fn.GetArgs() {
@@ -222,8 +211,22 @@ func preparedCompositeBoundValue(expr *plan.Expr, partCount int) bool {
 }
 
 func preparedPKEquality(expr *plan.Expr, bindingTag, pkPos int32) bool {
+	if expr == nil {
+		return false
+	}
 	fn := expr.GetF()
-	if fn == nil || fn.GetFunc().GetObjName() != "=" || len(fn.GetArgs()) != 2 {
+	if fn == nil || fn.GetFunc() == nil {
+		return false
+	}
+	if strings.EqualFold(fn.GetFunc().GetObjName(), "and") {
+		for _, arg := range fn.GetArgs() {
+			if preparedPKEquality(arg, bindingTag, pkPos) {
+				return true
+			}
+		}
+		return false
+	}
+	if fn.GetFunc().GetObjName() != "=" || len(fn.GetArgs()) != 2 {
 		return false
 	}
 	left, right := fn.GetArgs()[0], fn.GetArgs()[1]
