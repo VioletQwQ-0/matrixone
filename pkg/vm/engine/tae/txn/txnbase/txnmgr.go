@@ -31,6 +31,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/txn/clock"
+	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
@@ -545,6 +546,24 @@ func (mgr *TxnManager) OnOpTxn(op *OpTxn) (err error) {
 	return
 }
 
+func isProfiledCommitOp(op *OpTxn) bool {
+	if op == nil || op.Txn == nil || op.Op != OpCommit || op.IsReplay() {
+		return false
+	}
+	store := op.Txn.GetStore()
+	return store != nil && !store.IsHeartbeat()
+}
+
+func profiledCommitBatchSize(items []any) int {
+	count := 0
+	for _, item := range items {
+		if op, ok := item.(*OpTxn); ok && isProfiledCommitOp(op) {
+			count++
+		}
+	}
+	return count
+}
+
 func (mgr *TxnManager) onPrePrepare(op *OpTxn) {
 	// If txn is not trying committing, do nothing
 	if !op.IsTryCommitting() {
@@ -653,6 +672,7 @@ func (mgr *TxnManager) on1PCApply(op *OpTxn) {
 		if err = op.Txn.ApplyCommit(); err != nil {
 			panic(err)
 		}
+		op.Txn.GetStore().TriggerTrace(txnif.TraceApplyCommitDone)
 	case OpRollback:
 		isAbort = true
 		if err = op.Txn.ApplyRollback(); err != nil {
@@ -738,11 +758,15 @@ func (mgr *TxnManager) onWal(op *OpTxn) bool {
 
 func (mgr *TxnManager) onApply(items ...any) {
 	now := time.Now()
+	if count := profiledCommitBatchSize(items); count > 0 {
+		v2.TxnCommit1PCApplyBatchSizeHistogram.Observe(float64(count))
+	}
 	for _, item := range items {
 		op := item.(*OpTxn)
 		store := op.Txn.GetStore()
 		store.TriggerTrace(txnif.TraceOnApply)
 		mgr.workers.Submit(func() {
+			store.TriggerTrace(txnif.TraceApplyWorker)
 			//Notice that WaitWalAndTail do nothing when op is OpRollback
 			if err := op.Txn.WaitWalAndTail(op.ctx); err != nil {
 				// v0.6 TODO: Error handling
@@ -864,12 +888,16 @@ func (mgr *TxnManager) Stop() {
 
 func (mgr *TxnManager) onPreWalStage(items ...any) {
 	now := time.Now()
+	if count := profiledCommitBatchSize(items); count > 0 {
+		v2.TxnCommit1PCPreWalBatchSizeHistogram.Observe(float64(count))
+	}
 	for _, item := range items {
 		op := item.(*OpTxn)
 		op.Txn.GetStore().TriggerTrace(txnif.TracePreWal)
 		if !mgr.preWal(op) {
 			continue
 		}
+		op.Txn.GetStore().TriggerTrace(txnif.TracePreWalDone)
 		if _, err := mgr.walQueue.Enqueue(op); err != nil {
 			panic(err)
 		}
@@ -884,6 +912,9 @@ func (mgr *TxnManager) onPreWalStage(items ...any) {
 
 func (mgr *TxnManager) onWalStage(items ...any) {
 	now := time.Now()
+	if count := profiledCommitBatchSize(items); count > 0 {
+		v2.TxnCommit1PCWalBatchSizeHistogram.Observe(float64(count))
+	}
 	for _, item := range items {
 		t1 := time.Now()
 		op := item.(*OpTxn)
@@ -891,7 +922,6 @@ func (mgr *TxnManager) onWalStage(items ...any) {
 		inWal := mgr.onWal(op)
 		t2 := time.Now()
 
-		op.Txn.GetStore().TriggerTrace(txnif.TracePostWal)
 		mgr.postWal(op, inWal)
 		t3 := time.Now()
 
@@ -920,6 +950,7 @@ func (mgr *TxnManager) postWal(op *OpTxn, inWal bool) {
 	}
 
 	// waiting for all things done and then to apply this commit/rollback
+	op.Txn.GetStore().TriggerTrace(txnif.TracePostWal)
 	if _, err := mgr.applyQueue.Enqueue(op); err != nil {
 		panic(err)
 	}

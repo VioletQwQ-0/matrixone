@@ -223,6 +223,7 @@ func (txn *Txn) DoneWithErr(err error, _ bool) {
 	}
 
 	txn.done1PCWithErr(err)
+	txn.GetStore().TriggerTrace(txnif.TraceDoneApply)
 	txn.GetStore().EndTrace()
 }
 
