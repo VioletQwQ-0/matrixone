@@ -164,6 +164,9 @@ type Session struct {
 	// transaction-local catalog writes that are not visible in CatalogCache.
 	ddlVersion      atomic.Uint64
 	hasLockedTables atomic.Bool
+	// main1I2Template is a fixed-cardinality bit of session-local diagnostic
+	// state. The routine goroutine updates it and commit consumes it.
+	main1I2Template atomic.Uint32
 
 	prepareStmts map[string]*PrepareStmt
 	lastStmtId   uint32
@@ -303,6 +306,26 @@ type Session struct {
 
 	// create version
 	createVersion string
+}
+
+func (ses *Session) mergeMain1I2Template(template v2.Main1I2Template) {
+	if !v2.Main1I2Enabled() || template == v2.Main1I2Unknown {
+		return
+	}
+	for {
+		old := ses.main1I2Template.Load()
+		merged := v2.Main1I2MergeTemplate(v2.Main1I2Template(old), template)
+		if old == uint32(merged) || ses.main1I2Template.CompareAndSwap(old, uint32(merged)) {
+			return
+		}
+	}
+}
+
+func (ses *Session) takeMain1I2Template() v2.Main1I2Template {
+	if !v2.Main1I2Enabled() {
+		return v2.Main1I2Unknown
+	}
+	return v2.Main1I2Template(ses.main1I2Template.Swap(uint32(v2.Main1I2Unknown)))
 }
 
 func (ses *Session) GetMySQLParser() *mysql.MySQLParser {

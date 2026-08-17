@@ -125,6 +125,9 @@ func InitMetric(
 		// http.HandleFunc("/query", makeDebugHandleFunc(ieFactory))
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.HandlerFor(v2.GetPrometheusGatherer(), promhttp.HandlerOpts{}))
+		if v2.Main1I2Enabled() {
+			mux.Handle("/debug/main1-i2", v2.Main1I2SnapshotHandler())
+		}
 		addr := fmt.Sprintf(":%d", SV.StatusPort)
 		statusSvr = &statusServer{Server: &http.Server{Addr: addr, Handler: mux}}
 		statusSvr.Add(1)

@@ -748,6 +748,11 @@ func (th *TxnHandler) commitUnsafe(execCtx *ExecCtx) error {
 		commitTs := th.txnOp.Txn().CommitTS
 		haveDDL := th.txnOp.GetWorkspace().GetHaveDDL()
 		execCtx.ses.SetTxnId(th.txnOp.Txn().ID)
+		if sess, ok := execCtx.ses.(*Session); ok && v2.Main1I2Enabled() {
+			txnID := th.txnOp.Txn().ID
+			v2.Main1I2RegisterFrontendTxn(txnID, sess.takeMain1I2Template())
+			defer v2.Main1I2AbortTxn(txnID)
+		}
 		commitResultUnknown := false
 		err, hasRecovered = ExecuteFuncWithRecover(func() error {
 			return th.txnOp.Commit(ctx2)
@@ -999,6 +1004,10 @@ func (th *TxnHandler) rollbackUnsafe(
 		execCtx.ses.EnterFPrint(FPRollbackUnsafeBeforeRollbackWithTxn)
 		defer execCtx.ses.ExitFPrint(FPRollbackUnsafeBeforeRollbackWithTxn)
 		execCtx.ses.SetTxnId(th.txnOp.Txn().ID)
+		if sess, ok := execCtx.ses.(*Session); ok && v2.Main1I2Enabled() {
+			sess.takeMain1I2Template()
+			v2.Main1I2AbortTxn(th.txnOp.Txn().ID)
+		}
 		haveDDL := th.txnOp.GetWorkspace().GetHaveDDL()
 		err, hasRecovered = ExecuteFuncWithRecover(func() error {
 			return th.txnOp.Rollback(ctx2)

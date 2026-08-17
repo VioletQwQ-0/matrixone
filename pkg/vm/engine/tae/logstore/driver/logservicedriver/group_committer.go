@@ -80,6 +80,9 @@ func (a *groupCommitter) Commit() error {
 	defer func() {
 		v2.LogTailAppendDurationHistogram.Observe(time.Since(start).Seconds())
 		v2.TxnTNLogServiceAppendDurationHistogram.Observe(time.Since(start).Seconds())
+		if v2.Main1I2Enabled() {
+			v2.Main1I2LogserviceSeconds.Observe(time.Since(start).Seconds())
+		}
 		task.End()
 	}()
 
@@ -90,6 +93,10 @@ func (a *groupCommitter) Commit() error {
 
 	if e, err = a.writer.Finish(); err != nil {
 		return err
+	}
+	if v2.Main1I2Enabled() {
+		v2.Main1I2LogserviceEntries.Observe(float64(len(a.writer.entries)))
+		v2.Main1I2LogserviceBytes.Observe(float64(e.Size()))
 	}
 
 	v2.LogTailBytesHistogram.Observe(float64(e.Size()))

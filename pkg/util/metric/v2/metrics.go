@@ -59,6 +59,7 @@ func init() {
 	initGCMetrics()
 	initCCPRMetrics()
 	initHashBuildMetrics()
+	initMain1I2Metrics()
 
 	registry.MustRegister(HeartbeatHistogram)
 	registry.MustRegister(HeartbeatFailureCounter)

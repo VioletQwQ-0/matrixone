@@ -183,6 +183,12 @@ type TxnManager struct {
 	workers         *ants.Pool
 
 	heartbeatJob atomic.Pointer[tasks.CancelableJob]
+	main1I2      struct {
+		preWalPending atomic.Int64
+		walPending    atomic.Int64
+		lastPreWalEnd atomic.Int64
+		lastWalEnd    atomic.Int64
+	}
 
 	txns struct {
 		// store all txns
@@ -542,7 +548,22 @@ func (mgr *TxnManager) OnOpTxn(op *OpTxn) (err error) {
 	if op.Txn.GetStore().IsOffline() {
 		panic("offline txn should not be here")
 	}
+	tracked := v2.Main1I2Enabled() && isProfiledCommitOp(op)
+	if tracked {
+		op.profileTemplate = v2.Main1I2LookupTemplate(op.Txn.GetID())
+		op.main1I2PreWalTracked = true
+		depth := mgr.main1I2.preWalPending.Add(1)
+		v2.Main1I2PreWalDepth.Observe(float64(depth))
+		v2.Main1I2PreWalDepthCurrent.Inc()
+	}
 	_, err = mgr.preWalQueue.Enqueue(op)
+	if tracked && err == nil {
+		v2.Main1I2PreWalArrival.Inc()
+	} else if tracked {
+		op.main1I2PreWalTracked = false
+		mgr.main1I2.preWalPending.Add(-1)
+		v2.Main1I2PreWalDepthCurrent.Dec()
+	}
 	return
 }
 
@@ -575,16 +596,33 @@ func (mgr *TxnManager) onPrePrepare(op *OpTxn) {
 	// If txn is trying committing, call txn.PrePrepare()
 	now := time.Now()
 	op.Txn.SetError(op.Txn.PrePrepare(op.ctx))
+	v2.Main1I2ObserveCommitSubstage(v2.Main1I2PrePrepare, op.profileTemplate, time.Since(now))
 	common.DoIfDebugEnabled(func() {
 		logutil.Debug("[PrePrepare]", TxnField(op.Txn), common.DurationField(time.Since(now)))
 	})
 }
 
-func (mgr *TxnManager) onPreparCommit(txn txnif.AsyncTxn) {
+func (mgr *TxnManager) onPreparCommit(txn txnif.AsyncTxn, template v2.Main1I2Template) {
+	var now time.Time
+	if v2.Main1I2Enabled() {
+		now = time.Now()
+	}
 	txn.SetError(txn.PrepareCommit())
+	if !now.IsZero() {
+		v2.Main1I2ObserveCommitSubstage(v2.Main1I2PrepareCommit, template, time.Since(now))
+	}
 }
 
-func (mgr *TxnManager) onPreApplyCommit(txn txnif.AsyncTxn) {
+func (mgr *TxnManager) onPreApplyCommit(txn txnif.AsyncTxn, template v2.Main1I2Template) {
+	var now time.Time
+	if v2.Main1I2Enabled() {
+		now = time.Now()
+	}
+	if !now.IsZero() {
+		defer func() {
+			v2.Main1I2ObserveCommitSubstage(v2.Main1I2PreApplyCommit, template, time.Since(now))
+		}()
+	}
 	if err := txn.PreApplyCommit(); err != nil {
 		txn.SetError(err)
 		mgr.OnException(err)
@@ -596,6 +634,15 @@ func (mgr *TxnManager) onPreparRollback(txn txnif.AsyncTxn) {
 }
 
 func (mgr *TxnManager) onBindPrepareTimeStamp(op *OpTxn) (ts types.TS) {
+	var now time.Time
+	if v2.Main1I2Enabled() {
+		now = time.Now()
+	}
+	if !now.IsZero() {
+		defer func() {
+			v2.Main1I2ObserveCommitSubstage(v2.Main1I2PrepareTS, op.profileTemplate, time.Since(now))
+		}()
+	}
 	// Replay txn is always prepared
 	if op.IsReplay() {
 		ts = op.Txn.GetPrepareTS()
@@ -635,7 +682,7 @@ func (mgr *TxnManager) onBindPrepareTimeStamp(op *OpTxn) (ts types.TS) {
 
 func (mgr *TxnManager) onPrepare(op *OpTxn, ts types.TS) {
 	//assign txn's prepare timestamp to TxnMvccNode.
-	mgr.onPreparCommit(op.Txn)
+	mgr.onPreparCommit(op.Txn, op.profileTemplate)
 	if op.Txn.GetError() != nil {
 		op.Op = OpRollback
 		op.Txn.Lock()
@@ -647,7 +694,7 @@ func (mgr *TxnManager) onPrepare(op *OpTxn, ts types.TS) {
 		// 1. Appending the data into appendableNode of block
 		// 2. Collect redo log,append into WalDriver
 		// TODO::need to handle the error,instead of panic for simplicity
-		mgr.onPreApplyCommit(op.Txn)
+		mgr.onPreApplyCommit(op.Txn, op.profileTemplate)
 		if op.Txn.GetError() != nil {
 			panic(op.Txn.GetID())
 		}
@@ -736,8 +783,15 @@ func (mgr *TxnManager) onWal(op *OpTxn) bool {
 		return false
 	}
 
+	var now time.Time
+	if v2.Main1I2Enabled() {
+		now = time.Now()
+	}
 	if err := op.Txn.PrepareWAL(); err != nil {
 		panic(err)
+	}
+	if !now.IsZero() {
+		v2.Main1I2ObserveCommitSubstage(v2.Main1I2PrepareWAL, op.profileTemplate, time.Since(now))
 	}
 
 	if !op.Txn.IsReplay() {
@@ -768,9 +822,16 @@ func (mgr *TxnManager) onApply(items ...any) {
 		mgr.workers.Submit(func() {
 			store.TriggerTrace(txnif.TraceApplyWorker)
 			//Notice that WaitWalAndTail do nothing when op is OpRollback
+			var waitStart time.Time
+			if v2.Main1I2Enabled() {
+				waitStart = time.Now()
+			}
 			if err := op.Txn.WaitWalAndTail(op.ctx); err != nil {
 				// v0.6 TODO: Error handling
 				panic(err)
+			}
+			if !waitStart.IsZero() {
+				v2.Main1I2ObserveCommitSubstage(v2.Main1I2WaitWalAndTail, op.profileTemplate, time.Since(waitStart))
 			}
 
 			if _, injected := objectio.CommitWaitInjected(); injected {
@@ -888,9 +949,31 @@ func (mgr *TxnManager) Stop() {
 
 func (mgr *TxnManager) onPreWalStage(items ...any) {
 	now := time.Now()
+	if v2.Main1I2Enabled() {
+		if previous := mgr.main1I2.lastPreWalEnd.Load(); previous != 0 {
+			v2.Main1I2PreWalIdle.Observe(time.Duration(now.UnixNano() - previous).Seconds())
+		}
+	}
 	if count := profiledCommitBatchSize(items); count > 0 {
 		v2.TxnCommit1PCPreWalBatchSizeHistogram.Observe(float64(count))
 	}
+	if v2.Main1I2Enabled() {
+		tracked := 0
+		for _, item := range items {
+			op := item.(*OpTxn)
+			if op.main1I2PreWalTracked {
+				op.main1I2PreWalTracked = false
+				tracked++
+			}
+		}
+		if tracked > 0 {
+			v2.Main1I2PreWalService.Add(float64(tracked))
+			depth := mgr.main1I2.preWalPending.Add(-int64(tracked))
+			v2.Main1I2PreWalDepth.Observe(float64(max(depth, 0)))
+			v2.Main1I2PreWalDepthCurrent.Sub(float64(tracked))
+		}
+	}
+	handled := 0
 	for _, item := range items {
 		op := item.(*OpTxn)
 		op.Txn.GetStore().TriggerTrace(txnif.TracePreWal)
@@ -898,8 +981,25 @@ func (mgr *TxnManager) onPreWalStage(items ...any) {
 			continue
 		}
 		op.Txn.GetStore().TriggerTrace(txnif.TracePreWalDone)
+		if v2.Main1I2Enabled() && isProfiledCommitOp(op) {
+			handled++
+			op.main1I2WalTracked = true
+			depth := mgr.main1I2.walPending.Add(1)
+			v2.Main1I2WalDepth.Observe(float64(depth))
+			v2.Main1I2WalDepthCurrent.Inc()
+		}
 		if _, err := mgr.walQueue.Enqueue(op); err != nil {
 			panic(err)
+		}
+		if v2.Main1I2Enabled() && isProfiledCommitOp(op) {
+			v2.Main1I2WalArrival.Inc()
+		}
+	}
+	if v2.Main1I2Enabled() {
+		v2.Main1I2PreWalCallback.Observe(time.Since(now).Seconds())
+		mgr.main1I2.lastPreWalEnd.Store(time.Now().UnixNano())
+		if handled > 0 {
+			v2.Main1I2PreWalToWalBatch.Observe(float64(handled))
 		}
 	}
 	common.DoIfDebugEnabled(func() {
@@ -912,8 +1012,29 @@ func (mgr *TxnManager) onPreWalStage(items ...any) {
 
 func (mgr *TxnManager) onWalStage(items ...any) {
 	now := time.Now()
+	if v2.Main1I2Enabled() {
+		if previous := mgr.main1I2.lastWalEnd.Load(); previous != 0 {
+			v2.Main1I2WalIdle.Observe(time.Duration(now.UnixNano() - previous).Seconds())
+		}
+	}
 	if count := profiledCommitBatchSize(items); count > 0 {
 		v2.TxnCommit1PCWalBatchSizeHistogram.Observe(float64(count))
+	}
+	if v2.Main1I2Enabled() {
+		tracked := 0
+		for _, item := range items {
+			op := item.(*OpTxn)
+			if op.main1I2WalTracked {
+				op.main1I2WalTracked = false
+				tracked++
+			}
+		}
+		if tracked > 0 {
+			v2.Main1I2WalService.Add(float64(tracked))
+			depth := mgr.main1I2.walPending.Add(-int64(tracked))
+			v2.Main1I2WalDepth.Observe(float64(max(depth, 0)))
+			v2.Main1I2WalDepthCurrent.Sub(float64(tracked))
+		}
 	}
 	for _, item := range items {
 		t1 := time.Now()
@@ -933,6 +1054,10 @@ func (mgr *TxnManager) onWalStage(items ...any) {
 				zap.Duration("post-wal-duration", t3.Sub(t2)),
 			)
 		}
+	}
+	if v2.Main1I2Enabled() {
+		v2.Main1I2WalCallback.Observe(time.Since(now).Seconds())
+		mgr.main1I2.lastWalEnd.Store(time.Now().UnixNano())
 	}
 	common.DoIfDebugEnabled(func() {
 		logutil.Debug("[onWalStage]",

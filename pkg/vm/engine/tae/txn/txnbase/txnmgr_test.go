@@ -23,6 +23,7 @@ import (
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
+	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
 	"github.com/stretchr/testify/require"
 )
@@ -346,6 +347,83 @@ func TestSingleTNCommitAndRollbackLifecycle(t *testing.T) {
 		require.Equal(t, txnif.TxnStateRollbacked, txn.GetTxnState(false))
 		waitTxnManagerEmpty(t, mgr)
 	})
+}
+
+func TestMain1I2ConcurrentQueueTrackingCloses(t *testing.T) {
+	if !v2.Main1I2Enabled() {
+		t.Skip("requires MO_MAIN1_I2=1")
+	}
+	mgr := NewTxnManager(NoopStoreFactory, nil, types.NewMockHLCClock(1))
+	mgr.Start(context.Background())
+	t.Cleanup(mgr.Stop)
+
+	const txnCount = 128
+	var wg sync.WaitGroup
+	errC := make(chan error, txnCount)
+	for idx := 0; idx < txnCount; idx++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			txn, err := mgr.StartTxn(nil)
+			if err == nil {
+				err = txn.Commit(context.Background())
+			}
+			errC <- err
+		}()
+	}
+	wg.Wait()
+	close(errC)
+	for err := range errC {
+		require.NoError(t, err)
+	}
+	require.Equal(t, int64(0), mgr.main1I2.preWalPending.Load())
+	require.Equal(t, int64(0), mgr.main1I2.walPending.Load())
+	waitTxnManagerEmpty(t, mgr)
+}
+
+func BenchmarkMain1I2CommitQueue(b *testing.B) {
+	mgr := NewTxnManager(NoopStoreFactory, nil, types.NewMockHLCClock(1))
+	mgr.Start(context.Background())
+	b.Cleanup(mgr.Stop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for idx := 0; idx < b.N; idx++ {
+		txn, err := mgr.StartTxn(nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := txn.Commit(context.Background()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+type main1I2ObservedBacklogStore struct{ NoopTxnStore }
+
+func (*main1I2ObservedBacklogStore) PrePrepare(context.Context) error {
+	time.Sleep(5190 * time.Microsecond)
+	return nil
+}
+
+func BenchmarkMain1I2CommitQueueAtObservedBacklog(b *testing.B) {
+	mgr := NewTxnManager(
+		func() txnif.TxnStore { return &main1I2ObservedBacklogStore{} },
+		nil,
+		types.NewMockHLCClock(1),
+	)
+	mgr.Start(context.Background())
+	b.Cleanup(mgr.Stop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for idx := 0; idx < b.N; idx++ {
+		txn, err := mgr.StartTxn(nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := txn.Commit(context.Background()); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func TestSingleTNInvalidStateAndReplayRollback(t *testing.T) {

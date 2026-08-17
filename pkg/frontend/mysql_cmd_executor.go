@@ -2244,6 +2244,7 @@ func createPrepareStmtInSession(
 		protocolVersion:     protocolVersion,
 		getFromSendLongData: make(map[int]struct{}),
 		schedulingSQLMode:   schedulingSQLMode,
+		main1I2Template:     v2.Main1I2ClassifyPreparedSQL(originSQL),
 	}
 
 	_, ok := preparePlan.GetDcl().Control.(*plan.DataControl_Prepare)
@@ -5368,6 +5369,8 @@ func ExecRequest(ses *Session, execCtx *ExecCtx, req *Request) (resp *Response, 
 		if err != nil {
 			markRowCountFailed(ses, ses.GetProc())
 			resp = NewGeneralErrorResponse(COM_STMT_EXECUTE, ses.GetTxnHandler().GetServerStatus(), err)
+		} else {
+			ses.mergeMain1I2Template(prepareStmt.main1I2Template)
 		}
 		prepareStmt.clearBinaryParamState(ses.GetProc())
 		return resp, nil

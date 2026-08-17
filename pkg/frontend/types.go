@@ -329,6 +329,9 @@ type PrepareStmt struct {
 	// protocolVersion is the cluster protocol used to build PreparePlan.
 	// A version change can alter internal function IDs in generated DML plans.
 	protocolVersion int64
+	// main1I2Template is populated only when the bounded MAIN1 attribution
+	// diagnostic is enabled. It never affects planning or execution behavior.
+	main1I2Template metric.Main1I2Template
 
 	// schedulingSQLMode freezes the lexical mode used when Sql was prepared.
 	// EXECUTE must not reinterpret optimizer comments after session sql_mode

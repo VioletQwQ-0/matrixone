@@ -134,7 +134,7 @@ func (tracer *txnTracer) advanceTask(
 	tracer.stamp = now
 }
 
-func (tracer *txnTracer) Stop() {
+func (tracer *txnTracer) Stop(txnID string) {
 	if tracer.task != nil {
 		tracer.task.End()
 		if tracer.state == 5 {
@@ -142,6 +142,11 @@ func (tracer *txnTracer) Stop() {
 		}
 	}
 	tracer.observeProfileDurations()
+	if v2.Main1I2Enabled() {
+		var durations [v2.Main1I2StageCount]time.Duration
+		copy(durations[:], tracer.profileDurations[:])
+		v2.Main1I2CompleteTN(txnID, durations)
+	}
 	tracer.task = nil
 	tracer.state = 0
 }
@@ -251,7 +256,7 @@ func (store *txnStore) EndTrace() {
 	}
 	tracer := store.tracer
 	store.tracer = nil
-	tracer.Stop()
+	tracer.Stop(store.txn.GetID())
 	putTracer(tracer)
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
+	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/handle"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/iface/txnif"
@@ -44,9 +45,12 @@ const (
 )
 
 type OpTxn struct {
-	ctx context.Context
-	Txn txnif.AsyncTxn
-	Op  OpType
+	ctx                  context.Context
+	Txn                  txnif.AsyncTxn
+	Op                   OpType
+	profileTemplate      v2.Main1I2Template
+	main1I2PreWalTracked bool
+	main1I2WalTracked    bool
 }
 
 func (txn *OpTxn) IsReplay() bool { return txn.Txn.IsReplay() }
