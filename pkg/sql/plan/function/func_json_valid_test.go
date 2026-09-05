@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/bytejson"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -677,20 +678,38 @@ func TestJsonValue(t *testing.T) {
 		require.True(t, s, info)
 	})
 
-	t.Run("object and array matches return null", func(t *testing.T) {
+	t.Run("object and array matches return json text", func(t *testing.T) {
 		tc := tcTemp{
 			info: "json_value non scalar",
 			inputs: []FunctionTestInput{
 				NewFunctionTestInput(types.T_varchar.ToType(),
-					[]string{`{"a":[1]}`, `{"a":{"b":1}}`, `{"a":true}`},
-					[]bool{false, false, false}),
+					[]string{`{"a":[1]}`, `{"a":{"b":1}}`, `[1,2]`, `{}`, `[]`, `[{}]`, `{"a":true}`},
+					[]bool{false, false, false, false, false, false, false}),
 				NewFunctionTestInput(types.T_varchar.ToType(),
-					[]string{`$.a`, `$.a`, `$.a`},
-					[]bool{false, false, false}),
+					[]string{`$.a`, `$.a`, `$`, `$`, `$`, `$[*]`, `$.a`},
+					[]bool{false, false, false, false, false, false, false}),
 			},
 			expect: NewFunctionTestResult(types.T_varchar.ToType(), false,
-				[]string{"", "", "true"},
-				[]bool{true, true, false}),
+				[]string{`[1]`, `{"b": 1}`, `[1, 2]`, `{}`, `[]`, `{}`, "true"},
+				[]bool{false, false, false, false, false, false, false}),
+		}
+		fcTC := NewFunctionTestCase(proc, tc.inputs, tc.expect, JsonValue)
+		s, info := fcTC.Run()
+		require.True(t, s, info)
+	})
+
+	t.Run("binary JSON input returns canonical composite text", func(t *testing.T) {
+		tc := tcTemp{
+			info: "json_value binary JSON composite",
+			inputs: []FunctionTestInput{
+				NewFunctionTestInput(types.T_json.ToType(),
+					[]string{mustJsonBinaryString(t, `{"a":[12]}`)},
+					[]bool{false}),
+				NewFunctionTestInput(types.T_varchar.ToType(),
+					[]string{"$.a"}, []bool{false}),
+			},
+			expect: NewFunctionTestResult(types.T_varchar.ToType(), false,
+				[]string{`[12]`}, []bool{false}),
 		}
 		fcTC := NewFunctionTestCase(proc, tc.inputs, tc.expect, JsonValue)
 		s, info := fcTC.Run()
@@ -738,6 +757,198 @@ func TestJsonValue(t *testing.T) {
 		}
 		fcTC := NewFunctionTestCase(proc, tc.inputs, tc.expect, JsonValue)
 		s, info := fcTC.Run()
+		require.True(t, s, info)
+	})
+}
+
+func TestJsonValueReturningAndResponses(t *testing.T) {
+	proc := testutil.NewProcess(t)
+
+	t.Run("default text and conversion responses", func(t *testing.T) {
+		inputs := []FunctionTestInput{
+			NewFunctionTestInput(types.T_varchar.ToType(),
+				[]string{`{"a":1}`, `{"a":"bad"}`, `{"a":1,"b":2}`, `not-json`},
+				[]bool{false, false, false, false}),
+			NewFunctionTestInput(types.T_varchar.ToType(),
+				[]string{`$.a`, `$.a`, `$.*`, `$`},
+				[]bool{false, false, false, false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{0}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{3}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{9}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{3}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{9}, []bool{false}),
+		}
+		fc := NewFunctionTestCase(proc, inputs,
+			NewFunctionTestResult(types.T_int64.ToType(), false,
+				[]int64{1, 9, 9, 9}, []bool{false, false, false, false}), JsonValue)
+		s, info := fc.Run()
+		require.True(t, s, info)
+	})
+
+	t.Run("implicit text keeps composite JSON", func(t *testing.T) {
+		inputs := []FunctionTestInput{
+			NewFunctionTestInput(types.T_varchar.ToType(),
+				[]string{`{"a":[12]}`, `{"a":{"k":1}}`, `{"a":"scalar"}`},
+				[]bool{false, false, false}),
+			NewFunctionTestInput(types.T_varchar.ToType(),
+				[]string{`$.a`, `$.a`, `$.a`},
+				[]bool{false, false, false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{""}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{1}, []bool{false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{""}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{1}, []bool{false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{""}, []bool{true}),
+		}
+		fc := NewFunctionTestCase(proc, inputs,
+			NewFunctionTestResult(types.T_varchar.ToType(), false,
+				[]string{`[12]`, `{"k": 1}`, "scalar"}, []bool{false, false, false}), JsonValue)
+		s, info := fc.Run()
+		require.True(t, s, info)
+	})
+
+	t.Run("returning JSON preserves binary value", func(t *testing.T) {
+		inputs := []FunctionTestInput{
+			NewFunctionTestInput(types.T_varchar.ToType(),
+				[]string{`{"a":[12]}`, `{"a":{"k":1}}`}, []bool{false, false}),
+			NewFunctionTestInput(types.T_varchar.ToType(), []string{`$.a`, `$.a`}, []bool{false, false}),
+			NewFunctionTestConstInput(types.T_json.ToType(), []string{""}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{1}, []bool{false}),
+			NewFunctionTestConstInput(types.T_json.ToType(), []string{""}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{1}, []bool{false}),
+			NewFunctionTestConstInput(types.T_json.ToType(), []string{""}, []bool{true}),
+		}
+		fc := NewFunctionTestCase(proc, inputs,
+			NewFunctionTestResult(types.T_json.ToType(), false,
+				[]string{mustJsonBinaryString(t, `[12]`), mustJsonBinaryString(t, `{"k":1}`)},
+				[]bool{false, false}), JsonValue)
+		s, info := fc.Run()
+		require.True(t, s, info)
+	})
+
+	t.Run("error responses expose MySQL diagnostics", func(t *testing.T) {
+		inputs := []FunctionTestInput{
+			NewFunctionTestInput(types.T_varchar.ToType(), []string{`{"a":1}`}, []bool{false}),
+			NewFunctionTestInput(types.T_varchar.ToType(), []string{`$.missing`}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{0}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{2}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{0}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{0}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{0}, []bool{true}),
+		}
+		fc := NewFunctionTestCase(proc, inputs,
+			NewFunctionTestResult(types.T_int64.ToType(), true, nil, nil), JsonValue)
+		require.NoError(t, fc.result.PreExtendAndReset(fc.fnLength))
+		err := fc.fn(fc.parameters, fc.result, fc.proc, fc.fnLength, nil)
+		require.Error(t, err)
+		require.True(t, moerr.IsMoErrCode(err, moerr.ErrMissingJSONValue))
+	})
+}
+
+func TestJsonValueContractBoundaries(t *testing.T) {
+	proc := testutil.NewProcess(t)
+
+	t.Run("mixed rows route conversion failures to ON ERROR", func(t *testing.T) {
+		target := types.NewWithCharset(types.T_varchar, 2, 0, types.CharsetUTF8MB4Bin)
+		inputs := []FunctionTestInput{
+			NewFunctionTestInput(types.T_varchar.ToType(),
+				[]string{`{"a":"ok"}`, `{"a":"long"}`, `{"a":[1]}`, `not-json`},
+				[]bool{false, false, false, false}),
+			NewFunctionTestInput(types.T_varchar.ToType(),
+				[]string{`$.a`, `$.a`, `$.a`, `$`},
+				[]bool{false, false, false, false}),
+			NewFunctionTestConstInput(target, []string{""}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{1}, []bool{false}),
+			NewFunctionTestConstInput(target, []string{"xx"}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{3}, []bool{false}),
+			NewFunctionTestConstInput(target, []string{"xx"}, []bool{false}),
+		}
+		fc := NewFunctionTestCase(proc, inputs,
+			NewFunctionTestResult(target, false,
+				[]string{"ok", "xx", "xx", "xx"},
+				[]bool{false, false, false, false}), JsonValue)
+		s, info := fc.Run()
+		require.True(t, s, info)
+	})
+
+	t.Run("conversion error with ERROR ON ERROR is returned", func(t *testing.T) {
+		inputs := []FunctionTestInput{
+			NewFunctionTestInput(types.T_varchar.ToType(), []string{`{"a":"bad"}`}, []bool{false}),
+			NewFunctionTestInput(types.T_varchar.ToType(), []string{`$.a`}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{0}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{2}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{0}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{2}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{0}, []bool{true}),
+		}
+		fc := NewFunctionTestCase(proc, inputs,
+			NewFunctionTestResult(types.T_int64.ToType(), true, nil, nil), JsonValue)
+		require.NoError(t, fc.result.PreExtendAndReset(fc.fnLength))
+		err := fc.fn(fc.parameters, fc.result, fc.proc, fc.fnLength, nil)
+		require.Error(t, err)
+	})
+
+	t.Run("narrow integer overflow is handled per row", func(t *testing.T) {
+		inputs := []FunctionTestInput{
+			NewFunctionTestInput(types.T_varchar.ToType(), []string{`{"a":300}`, `{"a":7}`}, []bool{false, false}),
+			NewFunctionTestInput(types.T_varchar.ToType(), []string{`$.a`, `$.a`}, []bool{false, false}),
+			NewFunctionTestConstInput(types.T_int8.ToType(), []int8{0}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{1}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int8.ToType(), []int8{9}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{3}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int8.ToType(), []int8{9}, []bool{false}),
+		}
+		fc := NewFunctionTestCase(proc, inputs,
+			NewFunctionTestResult(types.T_int8.ToType(), false, []int8{9, 7}, []bool{false, false}), JsonValue)
+		s, info := fc.Run()
+		require.True(t, s, info)
+	})
+
+	t.Run("fractional loss is handled as a conversion error", func(t *testing.T) {
+		target := types.New(types.T_int64, 0, 0)
+		inputs := []FunctionTestInput{
+			NewFunctionTestInput(types.T_varchar.ToType(), []string{`{"a":1.5}`, `{"a":2.0}`}, []bool{false, false}),
+			NewFunctionTestInput(types.T_varchar.ToType(), []string{`$.a`, `$.a`}, []bool{false, false}),
+			NewFunctionTestConstInput(target, []int64{0}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{1}, []bool{false}),
+			NewFunctionTestConstInput(target, []int64{7}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{3}, []bool{false}),
+			NewFunctionTestConstInput(target, []int64{7}, []bool{false}),
+		}
+		fc := NewFunctionTestCase(proc, inputs,
+			NewFunctionTestResult(target, false, []int64{7, 2}, []bool{false, false}), JsonValue)
+		s, info := fc.Run()
+		require.True(t, s, info)
+	})
+
+	t.Run("fixed inputs are formatted instead of reinterpreted as Varlena", func(t *testing.T) {
+		inputs := []FunctionTestInput{
+			NewFunctionTestInput(types.T_int64.ToType(), []int64{1, 42}, []bool{false, false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{"$"}, []bool{false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{""}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{1}, []bool{false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{""}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{1}, []bool{false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{""}, []bool{true}),
+		}
+		fc := NewFunctionTestCase(proc, inputs,
+			NewFunctionTestResult(types.T_varchar.ToType(), false, []string{"1", "42"}, []bool{false, false}), JsonValue)
+		s, info := fc.Run()
+		require.True(t, s, info)
+	})
+
+	t.Run("malformed binary JSON follows ON ERROR", func(t *testing.T) {
+		inputs := []FunctionTestInput{
+			NewFunctionTestInput(types.T_json.ToType(), []string{""}, []bool{false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{"$"}, []bool{false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{""}, []bool{true}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{1}, []bool{false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{"fallback"}, []bool{false}),
+			NewFunctionTestConstInput(types.T_int64.ToType(), []int64{3}, []bool{false}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{"fallback"}, []bool{false}),
+		}
+		fc := NewFunctionTestCase(proc, inputs,
+			NewFunctionTestResult(types.T_varchar.ToType(), false, []string{"fallback"}, []bool{false}), JsonValue)
+		s, info := fc.Run()
 		require.True(t, s, info)
 	})
 }

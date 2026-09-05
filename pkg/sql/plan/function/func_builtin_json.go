@@ -3265,9 +3265,10 @@ func schemaHasRefKeywordInSchemaOrSchemaArray(bj bytejson.ByteJson) bool {
 	return false
 }
 
-// JSON_VALUE(json_doc, path) → VARCHAR
-// Equivalent to JSON_UNQUOTE(JSON_EXTRACT(json_doc, path)).
-func JsonValue(ivecs []*vector.Vector, result vector.FunctionResultWrapper, proc *process.Process, length int, selectList *FunctionSelectList) error {
+// jsonValueLegacy evaluates the two-argument form retained in persisted plans
+// created before RETURNING/ON EMPTY/ON ERROR were lowered to the internal
+// seven-argument overload.
+func jsonValueLegacy(ivecs []*vector.Vector, result vector.FunctionResultWrapper, proc *process.Process, length int, selectList *FunctionSelectList) error {
 	result.UseOptFunctionParamFrame(2)
 	rs := vector.MustFunctionResult[types.Varlena](result)
 	p1 := vector.OptGetBytesParamFromWrapper(rs, 0, ivecs[0])
@@ -3304,7 +3305,7 @@ func JsonValue(ivecs []*vector.Vector, result vector.FunctionResultWrapper, proc
 		if isStr {
 			bj, err = types.ParseSliceToByteJson(jsonBytes)
 		} else {
-			bj = types.DecodeJson(jsonBytes)
+			bj, err = decodeJSONValueStored(jsonBytes)
 		}
 		if err != nil {
 			return moerr.NewInvalidArg(proc.Ctx, "json_value", "invalid JSON document")
@@ -3325,10 +3326,6 @@ func JsonValue(ivecs []*vector.Vector, result vector.FunctionResultWrapper, proc
 			val = val.GetArrayElem(0)
 		}
 		if val.IsNull() {
-			rs.AppendMustNullForBytesResult()
-			continue
-		}
-		if val.Type == bytejson.TpCodeObject || val.Type == bytejson.TpCodeArray {
 			rs.AppendMustNullForBytesResult()
 			continue
 		}
