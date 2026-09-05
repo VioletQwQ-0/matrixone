@@ -42,7 +42,8 @@ var (
 	dynamicCNMu                  sync.RWMutex
 	dynamicCNServicePIDs         []int
 	dynamicCNServiceCommands     [][]string
-	dynamicChaosTester           *chaos.ChaosTester
+	dynamicChaosTester           dynamicChaosStopper
+	dynamicCNStopping            bool
 	launchStartDynamicCNServices = startDynamicCNServices
 	dynamicForkExec              = syscall.ForkExec
 	dynamicKill                  = syscall.Kill
@@ -56,6 +57,12 @@ var (
 		return err
 	}
 )
+
+type dynamicChaosStopper interface {
+	Stop() error
+}
+
+var errDynamicCNStopping = errors.New("dynamic cn is stopping")
 
 func startDynamicCluster(
 	ctx context.Context,
@@ -125,6 +132,10 @@ func startDynamicCNServices(
 	}
 
 	dynamicCNMu.Lock()
+	if dynamicCNStopping {
+		dynamicCNMu.Unlock()
+		return errDynamicCNStopping
+	}
 	dynamicCNServiceCommands = make([][]string, cfg.ServiceCount)
 	dynamicCNServicePIDs = make([]int, cfg.ServiceCount)
 	dynamicCNMu.Unlock()
@@ -146,9 +157,13 @@ func startDynamicCNServices(
 		return nil
 	}
 	cfg.Chaos.Restart.KillFunc = stopDynamicCNByIndex
-	cfg.Chaos.Restart.RestartFunc = startDynamicCNByIndex
+	cfg.Chaos.Restart.RestartFunc = restartDynamicCNByIndex
 	chaosTester := chaos.NewChaosTester(cfg.Chaos)
 	dynamicCNMu.Lock()
+	if dynamicCNStopping {
+		dynamicCNMu.Unlock()
+		return errDynamicCNStopping
+	}
 	dynamicChaosTester = chaosTester
 	dynamicCNMu.Unlock()
 	if err := chaosTester.Start(); err != nil {
@@ -157,6 +172,16 @@ func startDynamicCNServices(
 			dynamicChaosTester = nil
 		}
 		dynamicCNMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func restartDynamicCNByIndex(index int) error {
+	if err := startDynamicCNByIndex(index); err != nil {
+		if errors.Is(err, errDynamicCNStopping) {
+			return nil
+		}
 		return err
 	}
 	return nil
@@ -291,24 +316,24 @@ func startDynamicCtlHTTPServer(addr string) error {
 }
 
 func stopDynamicCNByIndex(index int) error {
-	dynamicCNMu.RLock()
+	dynamicCNMu.Lock()
+	defer dynamicCNMu.Unlock()
 	if index < 0 || index >= len(dynamicCNServicePIDs) {
-		dynamicCNMu.RUnlock()
 		return errors.New("invalid dynamic cn index")
 	}
+	if dynamicCNStopping {
+		return nil
+	}
 	pid := dynamicCNServicePIDs[index]
-	dynamicCNMu.RUnlock()
 	if pid == 0 {
 		return errors.New("dynamic cn is not running")
 	}
 	if err := dynamicKill(pid, syscall.SIGKILL); err != nil {
 		return err
 	}
-	dynamicCNMu.Lock()
 	if dynamicCNServicePIDs[index] == pid {
 		dynamicCNServicePIDs[index] = 0
 	}
-	dynamicCNMu.Unlock()
 	return nil
 }
 
@@ -321,6 +346,9 @@ func startDynamicCNByIndex(index int) error {
 	defer dynamicCNMu.Unlock()
 	if index < 0 || index >= len(dynamicCNServiceCommands) {
 		return errors.New("invalid dynamic cn index")
+	}
+	if dynamicCNStopping {
+		return errDynamicCNStopping
 	}
 	if dynamicCNServicePIDs[index] != 0 {
 		return errors.New("dynamic cn is already running")
@@ -348,14 +376,17 @@ func startDynamicCNByIndex(index int) error {
 // path; stopDynamicCNByIndex remains the abrupt-exit helper for chaos tests.
 func stopAllDynamicCNServicesGracefully(ctx context.Context) error {
 	dynamicCNMu.Lock()
+	dynamicCNStopping = true
 	chaosTester := dynamicChaosTester
 	dynamicChaosTester = nil
-	pids := append([]int(nil), dynamicCNServicePIDs...)
 	dynamicCNMu.Unlock()
 	var errs error
 	if chaosTester != nil {
 		errs = errors.Join(errs, chaosTester.Stop())
 	}
+	dynamicCNMu.RLock()
+	pids := append([]int(nil), dynamicCNServicePIDs...)
+	dynamicCNMu.RUnlock()
 	type result struct {
 		index int
 		err   error

@@ -106,6 +106,7 @@ func setLaunchTestHooks(t *testing.T) {
 	oldDynamicPIDs := append([]int(nil), dynamicCNServicePIDs...)
 	oldDynamicCommands := append([][]string(nil), dynamicCNServiceCommands...)
 	oldDynamicChaosTester := dynamicChaosTester
+	oldDynamicStopping := dynamicCNStopping
 	dynamicCNMu.Unlock()
 	oldLaunchFile := *launchFile
 	oldWithProxy := *withProxy
@@ -126,6 +127,7 @@ func setLaunchTestHooks(t *testing.T) {
 		dynamicCNServicePIDs = oldDynamicPIDs
 		dynamicCNServiceCommands = oldDynamicCommands
 		dynamicChaosTester = oldDynamicChaosTester
+		dynamicCNStopping = oldDynamicStopping
 		dynamicCNMu.Unlock()
 		*launchFile = oldLaunchFile
 		*withProxy = oldWithProxy
