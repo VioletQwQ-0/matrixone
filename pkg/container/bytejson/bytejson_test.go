@@ -136,7 +136,7 @@ func TestMySQLOpaqueTaggedValue(t *testing.T) {
 }
 
 func TestMySQLOpaqueRequiresRollingUpgradeAdmission(t *testing.T) {
-	require.Equal(t, int64(defines.MORPCVersion51), MySQLOpaqueProtocolVersion)
+	require.Equal(t, int64(defines.MORPCVersion52), MySQLOpaqueProtocolVersion)
 
 	_, err := NewMySQLOpaque(defines.MORPCVersion49, 252, []byte{0x00})
 	require.ErrorContains(t, err, "MORPC protocol version "+strconv.FormatInt(MySQLOpaqueProtocolVersion, 10))

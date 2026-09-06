@@ -113,7 +113,7 @@ func TestCompareByteJsonMalformedBinaryPreservesCanonicalEquivalence(t *testing.
 	} {
 		t.Run(stored, func(t *testing.T) {
 			malformed := makeBinaryJson(TpCodeBlob, []byte(stored))
-			valid, err := NewMySQLOpaque(defines.MORPCVersion51, 252, []byte(stored))
+			valid, err := NewMySQLOpaque(defines.MORPCVersion52, 252, []byte(stored))
 			require.NoError(t, err)
 
 			require.Zero(t, CompareByteJson(malformed, valid))
