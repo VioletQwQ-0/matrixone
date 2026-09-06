@@ -110,17 +110,11 @@ func TestDynamicShutdownDoesNotEscalateAfterWaitReapsChild(t *testing.T) {
 	dynamicCNServiceProcesses = []*dynamicCNChild{child}
 	dynamicCNMu.Unlock()
 
-	var signals []syscall.Signal
-	dynamicKill = func(_ *dynamicCNChild, signal syscall.Signal) error {
-		signals = append(signals, signal)
-		return nil
-	}
-
+	process := child.process.(*testDynamicProcess)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- stopAllDynamicCNServicesGracefully(ctx) }()
 
-	process := child.process.(*testDynamicProcess)
 	<-process.waitedC
 	deadline := time.NewTimer(time.Second)
 	defer deadline.Stop()
@@ -140,7 +134,10 @@ func TestDynamicShutdownDoesNotEscalateAfterWaitReapsChild(t *testing.T) {
 	}
 	cancel()
 
-	require.ErrorIs(t, <-done, context.Canceled)
+	require.NoError(t, <-done)
+	process.mu.Lock()
+	signals := append([]syscall.Signal(nil), process.signals...)
+	process.mu.Unlock()
 	require.Equal(t, []syscall.Signal{syscall.SIGTERM}, signals)
 }
 

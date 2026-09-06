@@ -174,7 +174,9 @@ func waitSignalToStop(stopper *stopper.Stopper, shutdownC chan struct{}) error {
 	signal.Notify(sigchan, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigchan)
 
-	go saveProfilesLoop(sigchan)
+	if *profileInterval != 0 {
+		go saveProfilesLoop(sigchan)
+	}
 
 	detail := "Starting shutdown..."
 	fatal := false
