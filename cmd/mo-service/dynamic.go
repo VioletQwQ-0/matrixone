@@ -458,7 +458,6 @@ func stopAllDynamicCNServicesGracefully(ctx context.Context) error {
 			for completed < expected {
 				recordResult(<-results)
 			}
-			break
 		}
 	}
 	dynamicCNMu.RLock()
