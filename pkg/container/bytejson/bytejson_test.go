@@ -26,6 +26,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/matrixorigin/matrixone/pkg/defines"
 )
 
 func TestMarshalBinarySubtypesRemainLegacyReadable(t *testing.T) {
@@ -109,7 +111,8 @@ func TestMySQLOpaqueTaggedValue(t *testing.T) {
 		{name: "binary", fieldType: 254, want: "base64:type254:AP9B"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			value := NewMySQLOpaque(tc.fieldType, payload)
+			value, err := NewMySQLOpaque(defines.MORPCLatestVersion, tc.fieldType, payload)
+			require.NoError(t, err)
 			require.Equal(t, TpCodeBlob, value.Type)
 			wantType := "BLOB"
 			if tc.fieldType == 16 {
@@ -130,6 +133,28 @@ func TestMySQLOpaqueTaggedValue(t *testing.T) {
 			require.Equal(t, value.String(), restored.String())
 		})
 	}
+}
+
+func TestMySQLOpaqueRequiresRollingUpgradeAdmission(t *testing.T) {
+	_, err := NewMySQLOpaque(defines.MORPCVersion45, 252, []byte{0x00})
+	require.ErrorContains(t, err, "MORPC protocol version 46")
+
+	value, err := NewMySQLOpaque(MySQLOpaqueProtocolVersion, 252, []byte{0x00})
+	require.NoError(t, err)
+	require.Equal(t, `"base64:type252:AA=="`, value.String())
+}
+
+func TestMySQLOpaqueTypeDoesNotAllocatePayload(t *testing.T) {
+	payload := bytes.Repeat([]byte{0x01}, 1<<20)
+	value, err := NewMySQLOpaque(defines.MORPCLatestVersion, 16, payload)
+	require.NoError(t, err)
+
+	allocs := testing.AllocsPerRun(10, func() {
+		if typ := value.TYPE(); typ != "BIT" {
+			t.Fatalf("unexpected type: %s", typ)
+		}
+	})
+	require.Zero(t, allocs, "tagged BIT TYPE should not materialize the payload")
 }
 
 func TestUint64TypeRemainsInteger(t *testing.T) {
