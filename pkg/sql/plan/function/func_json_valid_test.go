@@ -756,9 +756,6 @@ func TestJsonSchemaNonStringRefsAtSchemaPositions(t *testing.T) {
 	for _, function := range functions {
 		for _, schemaCase := range cases {
 			for _, constant := range []bool{false, true} {
-				function := function
-				schemaCase := schemaCase
-				constant := constant
 				name := fmt.Sprintf("%s/%s/constant=%t", function.name, schemaCase.name, constant)
 				t.Run(name, func(t *testing.T) {
 					schemaInput := NewFunctionTestInput(types.T_varchar.ToType(), []string{schemaCase.schema}, []bool{false})
