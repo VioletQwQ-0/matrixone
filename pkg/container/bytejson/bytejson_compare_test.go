@@ -106,6 +106,37 @@ func TestCompareByteJsonMalformedMySQLOpaqueTagFallsBackToBlob(t *testing.T) {
 	require.Equal(t, []byte{canonicalBinaryMarker, byte(binaryJSONBlob)}, key[:2])
 }
 
+func TestCompareByteJsonMalformedBinaryPreservesCanonicalEquivalence(t *testing.T) {
+	for _, stored := range []string{
+		"base64:type16:not-base64",
+		"base64:type252:not-base64",
+	} {
+		t.Run(stored, func(t *testing.T) {
+			malformed := makeBinaryJson(TpCodeBlob, []byte(stored))
+			valid, err := NewMySQLOpaque(defines.MORPCVersion50, 252, []byte(stored))
+			require.NoError(t, err)
+
+			require.Zero(t, CompareByteJson(malformed, valid))
+			require.Zero(t, CompareByteJson(valid, malformed))
+			malformedKey, ok := AppendCanonicalBinary(nil, malformed)
+			require.True(t, ok)
+			validKey, ok := AppendCanonicalBinary(nil, valid)
+			require.True(t, ok)
+			require.Equal(t, malformedKey, validKey)
+		})
+	}
+
+	legacyMalformed := makeBinaryJson(TpCodeBlob, []byte("not-base64"))
+	raw := makeBinaryJson(TpCodeOpaque, []byte("not-base64"))
+	require.Zero(t, CompareByteJson(legacyMalformed, raw))
+	require.Zero(t, CompareByteJson(raw, legacyMalformed))
+	legacyKey, ok := AppendCanonicalBinary(nil, legacyMalformed)
+	require.True(t, ok)
+	rawKey, ok := AppendCanonicalBinary(nil, raw)
+	require.True(t, ok)
+	require.Equal(t, legacyKey, rawKey)
+}
+
 func TestCompareByteJsonLegacyBlobLargePayloadAllocations(t *testing.T) {
 	payload := bytes.Repeat([]byte{0xab}, 1<<20)
 	legacy := makeBinaryJson(TpCodeBlob, []byte(base64.StdEncoding.EncodeToString(payload)))

@@ -598,7 +598,6 @@ type binaryJSONValueView struct {
 	legacyEncoded   []byte
 	fallbackRaw     []byte
 	needsValidation bool
-	forceRaw        bool
 }
 
 func binaryJSONValue(bj ByteJson) (binaryJSONValueView, bool) {
@@ -651,10 +650,8 @@ func resolveBinaryJSONValue(value binaryJSONValueView) binaryJSONValueView {
 		return value
 	}
 	return binaryJSONValueView{
-		subtype:       binaryJSONBlob,
-		legacyEncoded: value.fallbackRaw,
-		fallbackRaw:   value.fallbackRaw,
-		forceRaw:      true,
+		subtype:    binaryJSONBlob,
+		rawPayload: value.fallbackRaw,
 	}
 }
 
@@ -671,9 +668,6 @@ func binaryJSONFallbackBytes(value binaryJSONValueView) []byte {
 func compareBinaryJSONValues(left, right binaryJSONValueView) (int, bool) {
 	if left.subtype != right.subtype {
 		return int(left.subtype) - int(right.subtype), true
-	}
-	if left.forceRaw || right.forceRaw {
-		return bytes.Compare(binaryJSONFallbackBytes(left), binaryJSONFallbackBytes(right)), true
 	}
 	switch {
 	case left.legacyEncoded != nil && right.legacyEncoded != nil:
