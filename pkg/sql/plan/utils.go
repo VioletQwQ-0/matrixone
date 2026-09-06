@@ -4628,6 +4628,9 @@ func collectPreparedJSONComparisonParamPositions(
 			if param := impl.F.Args[0].GetP(); param != nil {
 				positions[param.Pos] = struct{}{}
 			}
+			if param := impl.F.Args[1].GetP(); param != nil {
+				positions[param.Pos] = struct{}{}
+			}
 		}
 		for _, arg := range impl.F.Args {
 			collectPreparedJSONComparisonParamPositions(arg, positions, seen)

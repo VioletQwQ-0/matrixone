@@ -84,7 +84,10 @@ func TestPreparedJSONComparisonParamPositionsIncludesMemberOfLeftParam(t *testin
 		Typ:  plan.Type{Id: int32(types.T_text)},
 		Expr: &plan.Expr_P{P: &plan.ParamRef{Pos: 3}},
 	}
-	right := MakePlan2StringConstExprWithType("[1]")
+	right := &plan.Expr{
+		Typ:  plan.Type{Id: int32(types.T_text)},
+		Expr: &plan.Expr_P{P: &plan.ParamRef{Pos: 7}},
+	}
 	memberOf := &plan.Expr{
 		Typ: plan.Type{Id: int32(types.T_int64)},
 		Expr: &plan.Expr_F{F: &plan.Function{
@@ -95,7 +98,7 @@ func TestPreparedJSONComparisonParamPositionsIncludesMemberOfLeftParam(t *testin
 	preparePlan := &plan.Plan{Plan: &plan.Plan_Query{Query: &plan.Query{
 		Nodes: []*plan.Node{{ProjectList: []*plan.Expr{memberOf}}},
 	}}}
-	require.Equal(t, []int32{3}, PreparedJSONComparisonParamPositions(preparePlan))
+	require.Equal(t, []int32{3, 7}, PreparedJSONComparisonParamPositions(preparePlan))
 }
 
 func TestHasTrailingZeros(t *testing.T) {

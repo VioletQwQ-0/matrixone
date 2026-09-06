@@ -913,21 +913,35 @@ func binaryProtocolPrepareParamIsBinaryString(mysqlType defines.MysqlType) bool 
 	}
 }
 
-func binaryProtocolPrepareParamBinaryStringMetadata(paramTypes []byte, paramCount int) []bool {
+func binaryProtocolPrepareParamBinaryStringMetadata(
+	paramTypes []byte,
+	paramCount int,
+	reusable []bool,
+) []bool {
 	if paramCount <= 0 {
 		return nil
 	}
-	metadata := make([]bool, paramCount)
 	hasBinaryString := false
 	for i := 0; i < paramCount && i*2 < len(paramTypes); i++ {
-		metadata[i] = binaryProtocolPrepareParamIsBinaryString(
-			defines.MysqlType(paramTypes[i*2]))
-		hasBinaryString = hasBinaryString || metadata[i]
+		if binaryProtocolPrepareParamIsBinaryString(defines.MysqlType(paramTypes[i*2])) {
+			hasBinaryString = true
+			break
+		}
 	}
 	if !hasBinaryString {
 		return nil
 	}
-	return metadata
+	if cap(reusable) < paramCount {
+		reusable = make([]bool, paramCount)
+	} else {
+		reusable = reusable[:paramCount]
+		clear(reusable)
+	}
+	for i := 0; i < paramCount && i*2 < len(paramTypes); i++ {
+		reusable[i] = binaryProtocolPrepareParamIsBinaryString(
+			defines.MysqlType(paramTypes[i*2]))
+	}
+	return reusable
 }
 
 func applyBinaryDirectResultDecimalTypes(
@@ -1476,7 +1490,10 @@ func initExecuteStmtParamWithResolverInSession(
 			hasParamKind = hasParamKind || kind != vector.PrepareParamNone
 		}
 		binaryStringMetadata := binaryProtocolPrepareParamBinaryStringMetadata(
-			prepareStmt.ParamTypes, paramCount)
+			prepareStmt.ParamTypes, paramCount, prepareStmt.binaryStringMetadata)
+		if binaryStringMetadata != nil {
+			prepareStmt.binaryStringMetadata = binaryStringMetadata
+		}
 		if hasConcreteType {
 			prepareStmt.paramMetadata = cwft.proc.SetPrepareParamsWithReusableTypedMeta(
 				prepareStmt.params, nil, prepareStmt.paramKinds,

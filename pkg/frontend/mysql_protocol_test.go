@@ -3210,6 +3210,16 @@ func buildFloat32ExecutePacket(value float32) []byte {
 	return data
 }
 
+func buildTinyExecutePacket(value uint8, unsigned bool) []byte {
+	data := make([]byte, 10)
+	copy(data, []byte{0, 0, 0, 0, 0, 0, 1, byte(defines.MYSQL_TYPE_TINY), 0})
+	if unsigned {
+		data[8] = 0x80
+	}
+	data[9] = value
+	return data
+}
+
 func buildLongLongExecutePacket(value uint64, unsigned bool) []byte {
 	data := make([]byte, 17)
 	copy(data, []byte{0, 0, 0, 0, 0, 0, 1, byte(defines.MYSQL_TYPE_LONGLONG), 0})

@@ -76,6 +76,26 @@ func jsonMemberOfRightIsBinary(parameter *vector.Vector, row int) bool {
 	return parameter.GetIsBinaryStringAt(row)
 }
 
+// jsonMemberOfRightHasInvalidRuntimeType preserves the SQL domain of a direct
+// prepared RHS. The parameter vector uses text as its transport type, so the
+// concrete type and conversion kind must be checked before the bytes can be
+// interpreted as JSON text. A missing runtime type remains the generic
+// prepared-plan case and is handled by the existing scalar conversion path.
+func jsonMemberOfRightHasInvalidRuntimeType(parameter *vector.Vector, row int) bool {
+	if parameter == nil || parameter.IsNull(uint64(row)) {
+		return false
+	}
+	runtimeType := parameter.GetType().Oid
+	if runtimeType != types.T_any && runtimeType != types.T_json && !runtimeType.IsMySQLString() {
+		return true
+	}
+	preparedType := parameter.GetPrepareParamType()
+	if preparedType != types.T_any {
+		return preparedType != types.T_json && !preparedType.IsMySQLString()
+	}
+	return parameter.GetPrepareParamKindAt(row) != vector.PrepareParamNone
+}
+
 func jsonMemberOfInvalidRightType(proc *process.Process, binaryCharset bool) error {
 	ctx := context.Background()
 	if proc != nil && proc.Ctx != nil {
@@ -228,6 +248,13 @@ func jsonMemberOf(
 			continue
 		}
 
+		if jsonMemberOfRightIsBinary(parameters[1], int(row)) {
+			return jsonMemberOfInvalidRightType(proc, true)
+		}
+		if jsonMemberOfRightHasInvalidRuntimeType(parameters[1], int(row)) {
+			return jsonMemberOfInvalidRightType(proc, false)
+		}
+
 		leftDocument, leftNull, err := left.documentAt(row, proc)
 		if err != nil {
 			return err
@@ -239,9 +266,6 @@ func jsonMemberOf(
 			continue
 		}
 
-		if jsonMemberOfRightIsBinary(parameters[1], int(row)) {
-			return jsonMemberOfInvalidRightType(proc, true)
-		}
 		rightDocument, rightNull, err := right.documentAt(row, proc)
 		if err != nil {
 			return err

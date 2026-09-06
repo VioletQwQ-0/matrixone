@@ -362,6 +362,10 @@ type PrepareStmt struct {
 	hasLagLeadParams           bool
 	paramKinds                 []vector.PrepareParamKind
 	paramMetadata              []bool
+	// binaryStringMetadata is statement-owned backing storage for the optional
+	// per-execution BLOB domain sidecar. It remains available across executions
+	// so a BLOB/non-BLOB transition does not allocate or retain stale flags.
+	binaryStringMetadata []bool
 	// jsonComparisonParamPositions is computed once per prepared-plan
 	// generation. Only these parameters need an exact SQL type in Process
 	// metadata; paramConcreteTypes is a reusable execution buffer.
@@ -849,6 +853,7 @@ func (prepareStmt *PrepareStmt) Close() {
 	}
 	prepareStmt.directResultParamPositions = nil
 	prepareStmt.directResultParamPositionsSet = false
+	prepareStmt.binaryStringMetadata = nil
 	prepareStmt.remapDb = nil
 }
 
