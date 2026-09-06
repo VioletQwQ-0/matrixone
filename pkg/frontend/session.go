@@ -2565,6 +2565,13 @@ func isAuthenticationRejected(err error) bool {
 	return errors.As(err, &rejected)
 }
 
+// isAuthenticationRequestRejected identifies a deterministic login-request
+// validation failure. Unlike credential rejection, the same client request
+// cannot succeed by trying another cached backend generation.
+func isAuthenticationRequestRejected(err error) bool {
+	return moerr.IsMoErrCode(err, moerr.ErrBadDB)
+}
+
 // AuthenticateUser Verify the user's password, and if the login information contains the database name, verify if the database exists
 func (ses *Session) AuthenticateUser(ctx context.Context, userInput string, dbName string, authResponse []byte, salt []byte, checkPassword func(pwd []byte, salt []byte, auth []byte) bool) ([]byte, error) {
 	var (

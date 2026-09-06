@@ -489,6 +489,13 @@ func TestAuthenticateUserMarksCanonicalCatalogRejection(t *testing.T) {
 	require.Equal(t, "Access denied for user tenant:dump. "+err.Error(), message)
 }
 
+func TestAuthenticationRequestRejectedClassifier(t *testing.T) {
+	require.True(t, isAuthenticationRequestRejected(
+		moerr.NewBadDBNoCtx("missing_db")))
+	require.False(t, isAuthenticationRequestRejected(
+		moerr.NewInternalErrorNoCtx("catalog temporarily unavailable")))
+}
+
 func TestAuthenticateSpecialUserSnapshotBoundary(t *testing.T) {
 	const userName = "issue27743-special-user"
 	SetSpecialUser(userName, []byte("Issue27743Pass01"))

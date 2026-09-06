@@ -193,6 +193,23 @@ func isCacheAuthRejected(err error) bool {
 	return errors.As(err, &rejected)
 }
 
+type cacheRequestRejectedError struct {
+	cause error
+}
+
+func (e *cacheRequestRejectedError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *cacheRequestRejectedError) Unwrap() error {
+	return e.cause
+}
+
+func isCacheRequestRejected(err error) bool {
+	var rejected *cacheRequestRejectedError
+	return errors.As(err, &rejected)
+}
+
 // cacheReuseIdentity describes state that is fixed by the client handshake or
 // by a session command that makes the backend generation unsafe to cache.
 // Database and password material are deliberately excluded: ResetSession and
@@ -513,6 +530,10 @@ func (c *connCache) refreshSessionAuth(
 			resp.RefreshSessionAuthResponse.AuthenticationFailed {
 			return nil, &cacheAuthRejectedError{cause: err}
 		}
+		if resp != nil && resp.RefreshSessionAuthResponse != nil &&
+			resp.RefreshSessionAuthResponse.RequestRejected {
+			return nil, &cacheRequestRejectedError{cause: err}
+		}
 		return nil, err
 	}
 	if resp == nil || resp.RefreshSessionAuthResponse == nil ||
@@ -522,6 +543,10 @@ func (c *connCache) refreshSessionAuth(
 		if resp != nil && resp.RefreshSessionAuthResponse != nil &&
 			resp.RefreshSessionAuthResponse.AuthenticationFailed {
 			return nil, &cacheAuthRejectedError{cause: err}
+		}
+		if resp != nil && resp.RefreshSessionAuthResponse != nil &&
+			resp.RefreshSessionAuthResponse.RequestRejected {
+			return nil, &cacheRequestRejectedError{cause: err}
 		}
 		return nil, err
 	}
@@ -829,6 +854,9 @@ func (c *connCache) PopContextWithIdentityError(
 					c.closeCachedConnection(sc)
 					if isCacheAuthRejected(err) {
 						return nil, withCode(err, codeAuthFailed)
+					}
+					if isCacheRequestRejected(err) {
+						return nil, errors.Unwrap(err)
 					}
 					continue
 				}

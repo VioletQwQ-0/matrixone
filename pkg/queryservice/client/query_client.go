@@ -155,7 +155,8 @@ func (c *queryClient) unwrapResponseError(resp *pb.Response) (*pb.Response, erro
 	if err := resp.UnwrapError(); err != nil {
 		if resp.CmdMethod == pb.CmdMethod_RefreshSessionAuth &&
 			resp.RefreshSessionAuthResponse != nil &&
-			resp.RefreshSessionAuthResponse.AuthenticationFailed {
+			(resp.RefreshSessionAuthResponse.AuthenticationFailed ||
+				resp.RefreshSessionAuthResponse.RequestRejected) {
 			return resp, err
 		}
 		c.pool.ReleaseResponse(resp)

@@ -908,6 +908,7 @@ func (rt *Routine) refreshSessionAuthWithContext(
 		resp.Success = false
 		resp.AuthString = nil
 		resp.AuthenticationFailed = false
+		resp.RequestRejected = false
 	}
 	operationCtx, ok := rt.mc.tryBeginOperationWithContext(ctx)
 	if !ok {
@@ -990,6 +991,7 @@ func (rt *Routine) refreshSessionAuthWithContext(
 	if err := protocol.authenticateUser(operationCtx, change.authResponse); err != nil {
 		resp.AuthenticationFailed = isAuthenticationRejected(err) ||
 			needConvertedToAccessDeniedError(strings.ToLower(err.Error()))
+		resp.RequestRejected = isAuthenticationRequestRejected(err)
 		return err
 	}
 	authString := append([]byte(nil), protocol.GetAuthString()...)

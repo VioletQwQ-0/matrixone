@@ -837,4 +837,9 @@ message RefreshSessionAuthResponse {
   // distinct from transport, protocol-version, and routine-lifecycle errors,
   // which may be retried against another cached backend.
   bool AuthenticationFailed = 3;
+  // RequestRejected means the login request hit a deterministic request-level
+  // validation failure, such as an unknown or inaccessible database. It is
+  // distinct from candidate-specific transport and lifecycle failures, which
+  // may be retried against another cached backend.
+  bool RequestRejected = 4;
 }

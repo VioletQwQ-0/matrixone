@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/lni/goutils/leaktest"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/morpc"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/common/runtime"
@@ -605,6 +606,99 @@ func TestConnCacheRefreshAuthenticationRejectionStopsCompatibleScan(t *testing.T
 		"one client login must cause at most one catalog authentication attempt")
 	require.Equal(t, 1, cache.Count(),
 		"a terminal authentication rejection must not drain other compatible entries")
+}
+
+func TestConnCacheRefreshRequestDeterministicFailureStopsCompatibleScan(t *testing.T) {
+	var calls atomic.Int64
+	cache := newConnCache(
+		context.Background(), "", runtime.DefaultRuntime().Logger(),
+		withResetSessionFunc(func(ServerConn) ([]byte, error) { return nil, nil }),
+		withAuthConstructor(nil),
+		withRefreshSessionAuthFunc(func(context.Context, ServerConn, clientInfo, []byte, []byte) ([]byte, error) {
+			calls.Add(1)
+			return nil, &cacheRequestRejectedError{
+				cause: moerr.NewBadDBNoCtx("missing_db"),
+			}
+		}),
+	)
+	defer cache.Close()
+
+	identity := cacheReuseIdentity{tenant: "tenant-a", username: "dump"}
+	for range 2 {
+		local, peer := net.Pipe()
+		defer peer.Close()
+		require.True(t, cache.(identityConnCache).PushWithIdentity(
+			"tenant-a", newMockServerConn(local), identity))
+	}
+
+	client := clientInfo{
+		labelInfo: labelInfo{Tenant: "tenant-a"},
+		username:  "dump",
+		database:  "missing_db",
+	}
+	sc, err := cache.(*connCache).PopContextWithIdentityError(
+		context.Background(),
+		"tenant-a", 7, nil, nil, client, identity,
+	)
+	require.Nil(t, sc)
+	require.True(t, moerr.IsMoErrCode(err, moerr.ErrBadDB))
+	assert.Equal(t, int64(1), calls.Load(),
+		"one request-deterministic login must cause at most one catalog authentication attempt")
+	assert.Equal(t, 1, cache.Count(),
+		"a request-deterministic login failure must not drain other compatible entries")
+}
+
+func TestConnCacheRefreshRequestDeterministicFailureProductionPath(t *testing.T) {
+	cn := metadata.CNService{ServiceID: "s1", SQLAddress: "pipe"}
+	var refreshCalls atomic.Int64
+	runTestWithQueryServiceHandlersAndRefresh(t, cn, nil, nil,
+		func(ctx context.Context, req *query.Request, resp *query.Response, _ *morpc.Buffer) error {
+			if req.RefreshSessionAuthRequest == nil {
+				return moerr.NewInternalError(ctx, "missing RefreshSessionAuth request")
+			}
+			refreshCalls.Add(1)
+			resp.RefreshSessionAuthResponse = &query.RefreshSessionAuthResponse{
+				RequestRejected: true,
+			}
+			return moerr.NewBadDB(ctx, "missing_db")
+		},
+		func(cc *clientConn, _ string) {
+			cache := newConnCache(
+				context.Background(), "", runtime.DefaultRuntime().Logger(),
+				withMOCluster(cc.moCluster),
+				withQueryClient(cc.queryClient),
+			)
+			defer cache.Close()
+
+			identity := cacheReuseIdentity{tenant: "tenant-a", username: "dump"}
+			for range 2 {
+				sc, _, cleanup := newPipeServerConnForCacheTest(t)
+				defer cleanup()
+				require.True(t, cache.(identityConnCache).PushWithIdentity(
+					"tenant-a", sc, identity))
+			}
+
+			requestCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			sc, err := cache.(*connCache).PopContextWithIdentityError(
+				requestCtx,
+				"tenant-a", 7, nil, nil,
+				clientInfo{
+					labelInfo: labelInfo{Tenant: "tenant-a"},
+					username:  "dump",
+					database:  "missing_db",
+				},
+				identity,
+			)
+			require.Nil(t, sc)
+			require.True(t, moerr.IsMoErrCode(err, moerr.ErrBadDB))
+			require.Contains(t, err.Error(), "missing_db")
+			require.Equal(t, int64(1), refreshCalls.Load(),
+				"one request-deterministic login must reach the query service once")
+			require.Equal(t, 1, cache.Count(),
+				"the unselected compatible generation must remain cached")
+		},
+	)
 }
 
 func TestConnCacheReapsExpiredIncompatibleEntriesBeforeLookup(t *testing.T) {
