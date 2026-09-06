@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -43,6 +44,63 @@ type testProxy struct {
 	startErr  error
 	stopErr   error
 	started   bool
+}
+
+type testDynamicProcess struct {
+	processPID int
+	waitFn     func() error
+	waitedC    chan struct{}
+
+	mu      sync.Mutex
+	waited  bool
+	signals []syscall.Signal
+}
+
+func (p *testDynamicProcess) pid() int {
+	return p.processPID
+}
+
+func (p *testDynamicProcess) signal(signal syscall.Signal) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.waited {
+		return os.ErrProcessDone
+	}
+	p.signals = append(p.signals, signal)
+	return nil
+}
+
+func (p *testDynamicProcess) wait() error {
+	var err error
+	if p.waitFn != nil {
+		err = p.waitFn()
+	}
+	p.mu.Lock()
+	p.waited = true
+	p.mu.Unlock()
+	if p.waitedC != nil {
+		close(p.waitedC)
+	}
+	return err
+}
+
+func newTestDynamicChild(pid int) *dynamicCNChild {
+	return &dynamicCNChild{
+		process: &testDynamicProcess{processPID: pid},
+		pid:     pid,
+	}
+}
+
+func setDynamicTestSlots(pids ...int) {
+	dynamicCNMu.Lock()
+	defer dynamicCNMu.Unlock()
+	dynamicCNServicePIDs = append([]int(nil), pids...)
+	dynamicCNServiceProcesses = make([]*dynamicCNChild, len(pids))
+	for i, pid := range pids {
+		if pid != 0 {
+			dynamicCNServiceProcesses[i] = newTestDynamicChild(pid)
+		}
+	}
 }
 
 func (p *testProxy) Start() error {
@@ -98,12 +156,13 @@ func setLaunchTestHooks(t *testing.T) {
 	oldNewClient := launchNewHAKeeperClient
 	oldSleep := launchSleep
 	oldStartDynamicCNServices := launchStartDynamicCNServices
-	oldDynamicForkExec := dynamicForkExec
+	oldDynamicStartProcess := dynamicStartProcess
 	oldDynamicKill := dynamicKill
 	oldDynamicListenAndServe := dynamicListenAndServe
 	oldDynamicWaitProcess := dynamicWaitProcess
 	dynamicCNMu.Lock()
 	oldDynamicPIDs := append([]int(nil), dynamicCNServicePIDs...)
+	oldDynamicProcesses := append([]*dynamicCNChild(nil), dynamicCNServiceProcesses...)
 	oldDynamicCommands := append([][]string(nil), dynamicCNServiceCommands...)
 	oldDynamicChaosTester := dynamicChaosTester
 	oldDynamicStopping := dynamicCNStopping
@@ -119,12 +178,13 @@ func setLaunchTestHooks(t *testing.T) {
 		launchNewHAKeeperClient = oldNewClient
 		launchSleep = oldSleep
 		launchStartDynamicCNServices = oldStartDynamicCNServices
-		dynamicForkExec = oldDynamicForkExec
+		dynamicStartProcess = oldDynamicStartProcess
 		dynamicKill = oldDynamicKill
 		dynamicListenAndServe = oldDynamicListenAndServe
 		dynamicWaitProcess = oldDynamicWaitProcess
 		dynamicCNMu.Lock()
 		dynamicCNServicePIDs = oldDynamicPIDs
+		dynamicCNServiceProcesses = oldDynamicProcesses
 		dynamicCNServiceCommands = oldDynamicCommands
 		dynamicChaosTester = oldDynamicChaosTester
 		dynamicCNStopping = oldDynamicStopping
@@ -183,23 +243,23 @@ func TestDynamicClusterPartialStartupIsOwnedAndCleaned(t *testing.T) {
 			}
 
 			forkCount := 0
-			dynamicForkExec = func(string, []string, *syscall.ProcAttr) (int, error) {
+			dynamicStartProcess = func(string, []string, *os.ProcAttr) (dynamicProcess, error) {
 				if forkCount == failAt {
-					return 0, errors.New("fork failed")
+					return nil, errors.New("fork failed")
 				}
 				forkCount++
-				return 1000 + forkCount, nil
+				return &testDynamicProcess{processPID: 1000 + forkCount}, nil
 			}
 			type killedProcess struct {
 				pid    int
 				signal syscall.Signal
 			}
 			var killed []killedProcess
-			dynamicKill = func(pid int, signal syscall.Signal) error {
-				killed = append(killed, killedProcess{pid: pid, signal: signal})
+			dynamicKill = func(child *dynamicCNChild, signal syscall.Signal) error {
+				killed = append(killed, killedProcess{pid: child.pid, signal: signal})
 				return nil
 			}
-			dynamicWaitProcess = func(int) error { return nil }
+			dynamicWaitProcess = func(*dynamicCNChild) error { return nil }
 			serviceLifecycle = newServiceSupervisor()
 
 			err := startDynamicCluster(context.Background(), cfg, nil, nil)
@@ -235,17 +295,19 @@ func TestDynamicProxyStartFailureStillCleansStartedChildren(t *testing.T) {
 	launchStartDynamicCNServices = func(_ string, dynamic Dynamic) error {
 		return startDynamicCNServices(baseDir, dynamic)
 	}
-	dynamicForkExec = func(string, []string, *syscall.ProcAttr) (int, error) { return 91, nil }
+	dynamicStartProcess = func(string, []string, *os.ProcAttr) (dynamicProcess, error) {
+		return &testDynamicProcess{processPID: 91}, nil
+	}
 	failedProxy := &testProxy{startErr: errors.New("listen: address already in use")}
 	launchNewProxy = func(string, *zap.Logger) goetty.Proxy { return failedProxy }
 	var killedPID int
 	var signal syscall.Signal
-	dynamicKill = func(pid int, got syscall.Signal) error {
-		killedPID = pid
+	dynamicKill = func(child *dynamicCNChild, got syscall.Signal) error {
+		killedPID = child.pid
 		signal = got
 		return nil
 	}
-	dynamicWaitProcess = func(int) error { return nil }
+	dynamicWaitProcess = func(*dynamicCNChild) error { return nil }
 	serviceLifecycle = newServiceSupervisor()
 
 	err := startDynamicCluster(context.Background(), cfg, nil, nil)
@@ -281,29 +343,31 @@ func TestDynamicCNServicesStartsConfiguredChaosTester(t *testing.T) {
 
 func TestDynamicWaitProcessRejectsInvalidPID(t *testing.T) {
 	setLaunchTestHooks(t)
-	require.Error(t, dynamicWaitProcess(-1))
+	require.Error(t, dynamicWaitProcess(nil))
 }
 
 func TestDynamicCNStartStopLifecycleErrors(t *testing.T) {
 	setLaunchTestHooks(t)
 	dynamicCNMu.Lock()
 	dynamicCNServiceCommands = [][]string{{"mo-service", "-cfg", "cn.toml"}}
-	dynamicCNServicePIDs = []int{0}
 	dynamicCNMu.Unlock()
+	setDynamicTestSlots(0)
 
 	require.ErrorContains(t, startDynamicCNByIndex(-1), "invalid")
 	require.ErrorContains(t, stopDynamicCNByIndex(1), "invalid")
 	require.ErrorContains(t, stopDynamicCNByIndex(0), "not running")
 
-	dynamicForkExec = func(string, []string, *syscall.ProcAttr) (int, error) { return 42, nil }
+	dynamicStartProcess = func(string, []string, *os.ProcAttr) (dynamicProcess, error) {
+		return &testDynamicProcess{processPID: 42}, nil
+	}
 	require.NoError(t, startDynamicCNByIndex(0))
 	require.ErrorContains(t, startDynamicCNByIndex(0), "already running")
 
 	killErr := errors.New("kill failed")
-	dynamicKill = func(int, syscall.Signal) error { return killErr }
+	dynamicKill = func(*dynamicCNChild, syscall.Signal) error { return killErr }
 	require.ErrorIs(t, stopDynamicCNByIndex(0), killErr)
-	dynamicKill = func(pid int, signal syscall.Signal) error {
-		require.Equal(t, 42, pid)
+	dynamicKill = func(child *dynamicCNChild, signal syscall.Signal) error {
+		require.Equal(t, 42, child.pid)
 		require.Equal(t, syscall.SIGKILL, signal)
 		return nil
 	}
@@ -345,8 +409,8 @@ func TestDynamicCNControlHTTPRoutesRequests(t *testing.T) {
 
 	dynamicCNMu.Lock()
 	dynamicCNServiceCommands = [][]string{{"mo-service", "-cfg", "cn.toml"}}
-	dynamicCNServicePIDs = []int{42}
 	dynamicCNMu.Unlock()
+	setDynamicTestSlots(42)
 	resp = request("/dynamic/cn?cn=9&action=start")
 	require.Equal(t, http.StatusBadRequest, resp.Code)
 	resp = request("/dynamic/cn?cn=0&action=start")
@@ -355,22 +419,23 @@ func TestDynamicCNControlHTTPRoutesRequests(t *testing.T) {
 
 	dynamicCNMu.Lock()
 	dynamicCNServicePIDs[0] = 0
+	dynamicCNServiceProcesses[0] = nil
 	dynamicCNMu.Unlock()
-	dynamicForkExec = func(string, []string, *syscall.ProcAttr) (int, error) {
-		return 0, errors.New("fork failed")
+	dynamicStartProcess = func(string, []string, *os.ProcAttr) (dynamicProcess, error) {
+		return nil, errors.New("fork failed")
 	}
 	resp = request("/dynamic/cn?cn=0&action=start")
 	require.Equal(t, "fork failed", resp.Body.String())
-	dynamicForkExec = func(string, []string, *syscall.ProcAttr) (int, error) {
-		return 43, nil
+	dynamicStartProcess = func(string, []string, *os.ProcAttr) (dynamicProcess, error) {
+		return &testDynamicProcess{processPID: 43}, nil
 	}
 	resp = request("/dynamic/cn?cn=0&action=start")
 	require.Equal(t, "OK", resp.Body.String())
 
-	dynamicKill = func(int, syscall.Signal) error { return errors.New("kill failed") }
+	dynamicKill = func(*dynamicCNChild, syscall.Signal) error { return errors.New("kill failed") }
 	resp = request("/dynamic/cn?cn=0&action=stop")
 	require.Equal(t, "kill failed", resp.Body.String())
-	dynamicKill = func(int, syscall.Signal) error { return nil }
+	dynamicKill = func(*dynamicCNChild, syscall.Signal) error { return nil }
 	resp = request("/dynamic/cn?cn=0&action=stop")
 	require.Equal(t, "OK", resp.Body.String())
 	resp = request("/dynamic/cn?cn=0&action=stop")
@@ -383,12 +448,10 @@ func TestDynamicCNControlHTTPRoutesRequests(t *testing.T) {
 
 func TestStopAllDynamicCNServicesGracefullyWaitsAndHonorsContext(t *testing.T) {
 	setLaunchTestHooks(t)
-	dynamicCNMu.Lock()
-	dynamicCNServicePIDs = []int{0, 41, 42}
-	dynamicCNMu.Unlock()
-	dynamicKill = func(int, syscall.Signal) error { return nil }
-	dynamicWaitProcess = func(pid int) error {
-		if pid == 42 {
+	setDynamicTestSlots(0, 41, 42)
+	dynamicKill = func(*dynamicCNChild, syscall.Signal) error { return nil }
+	dynamicWaitProcess = func(child *dynamicCNChild) error {
+		if child.pid == 42 {
 			return errors.New("wait failed")
 		}
 		return nil
@@ -400,20 +463,18 @@ func TestStopAllDynamicCNServicesGracefullyWaitsAndHonorsContext(t *testing.T) {
 	require.Equal(t, 42, dynamicCNServicePIDs[2])
 	dynamicCNMu.RUnlock()
 
-	dynamicCNMu.Lock()
-	dynamicCNServicePIDs = []int{43}
-	dynamicCNMu.Unlock()
+	setDynamicTestSlots(43)
 	release := make(chan struct{})
 	waitStarted := make(chan struct{})
 	forceKill := make(chan struct{})
 	waitDone := make(chan struct{})
-	dynamicKill = func(_ int, signal syscall.Signal) error {
+	dynamicKill = func(_ *dynamicCNChild, signal syscall.Signal) error {
 		if signal == syscall.SIGKILL {
 			close(forceKill)
 		}
 		return nil
 	}
-	dynamicWaitProcess = func(int) error {
+	dynamicWaitProcess = func(*dynamicCNChild) error {
 		close(waitStarted)
 		<-release
 		close(waitDone)
@@ -435,21 +496,19 @@ func TestStopAllDynamicCNServicesGracefullyWaitsAndHonorsContext(t *testing.T) {
 
 func TestStopAllDynamicCNServicesForceStopsAfterDeadline(t *testing.T) {
 	setLaunchTestHooks(t)
-	dynamicCNMu.Lock()
-	dynamicCNServicePIDs = []int{100}
-	dynamicCNMu.Unlock()
+	setDynamicTestSlots(100)
 
 	waitStarted := make(chan struct{})
 	forceKill := make(chan struct{})
 	var signals []syscall.Signal
-	dynamicKill = func(_ int, signal syscall.Signal) error {
+	dynamicKill = func(_ *dynamicCNChild, signal syscall.Signal) error {
 		signals = append(signals, signal)
 		if signal == syscall.SIGKILL {
 			close(forceKill)
 		}
 		return nil
 	}
-	dynamicWaitProcess = func(int) error {
+	dynamicWaitProcess = func(*dynamicCNChild) error {
 		close(waitStarted)
 		<-forceKill
 		return nil
@@ -470,14 +529,12 @@ func TestStopAllDynamicCNServicesForceStopsAfterDeadline(t *testing.T) {
 
 func TestStopAllDynamicCNServicesEscalatesAfterSIGTERMFailure(t *testing.T) {
 	setLaunchTestHooks(t)
-	dynamicCNMu.Lock()
-	dynamicCNServicePIDs = []int{100}
-	dynamicCNMu.Unlock()
+	setDynamicTestSlots(100)
 
 	forceKill := make(chan struct{})
 	termErr := errors.New("SIGTERM failed")
 	var signals []syscall.Signal
-	dynamicKill = func(_ int, signal syscall.Signal) error {
+	dynamicKill = func(_ *dynamicCNChild, signal syscall.Signal) error {
 		signals = append(signals, signal)
 		if signal == syscall.SIGTERM {
 			return termErr
@@ -485,7 +542,7 @@ func TestStopAllDynamicCNServicesEscalatesAfterSIGTERMFailure(t *testing.T) {
 		close(forceKill)
 		return nil
 	}
-	dynamicWaitProcess = func(int) error {
+	dynamicWaitProcess = func(*dynamicCNChild) error {
 		<-forceKill
 		return nil
 	}

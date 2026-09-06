@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/stopper"
 	"github.com/stretchr/testify/require"
 )
 
@@ -244,6 +245,56 @@ func TestServiceSupervisorConfiguredProxyFailureStopsBeforeCN(t *testing.T) {
 		t.Fatal("CN phase opened after configured proxy close failed")
 	default:
 	}
+}
+
+func TestConfiguredProxyStartupFailureWakesShutdown(t *testing.T) {
+	oldLifecycle := serviceLifecycle
+	oldProfileInterval := *profileInterval
+	t.Cleanup(func() {
+		serviceLifecycle = oldLifecycle
+		*profileInterval = oldProfileInterval
+	})
+
+	s := newServiceSupervisor()
+	serviceLifecycle = s
+	*profileInterval = 0
+	startupErr := errors.New("configured proxy file service failed")
+	finishProxy := s.registerTask(serviceRoleProxy)
+	finishProxy(startupErr)
+	s.notifyFatal(startupErr)
+
+	mainStopper := stopper.NewStopper("test-main")
+	defer mainStopper.Stop()
+	shutdownC := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- waitSignalToStop(mainStopper, shutdownC) }()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, startupErr)
+	case <-time.After(time.Second):
+		t.Fatal("configured proxy startup failure did not wake shutdown")
+	}
+}
+
+func TestServiceSupervisorFatalCleanupReapsDynamicCN(t *testing.T) {
+	oldProxy := cnProxy
+	cnProxy = nil
+	t.Cleanup(func() { cnProxy = oldProxy })
+
+	s := newServiceSupervisor()
+	cleanupCalls := 0
+	s.setDynamicCNStop(func(context.Context) error {
+		cleanupCalls++
+		return nil
+	})
+	finishProxy := s.registerTask(serviceRoleProxy)
+	finishProxy(errors.New("proxy startup failed"))
+
+	require.Error(t, s.shutdownAfterFatal(context.Background()))
+	require.Equal(t, 1, cleanupCalls)
+	require.Error(t, s.shutdownAfterFatal(context.Background()))
+	require.Equal(t, 1, cleanupCalls)
 }
 
 func TestServiceSupervisorDynamicCNFailureStopsBeforeTN(t *testing.T) {

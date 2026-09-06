@@ -67,6 +67,8 @@ type serviceSupervisor struct {
 
 	shutdownOnce sync.Once
 	shutdownErr  error
+	fatalOnce    sync.Once
+	fatalC       chan error
 
 	dynamicCNStop func(context.Context) error
 }
@@ -76,7 +78,25 @@ func newServiceSupervisor() *serviceSupervisor {
 	for i := range s.roles {
 		s.roles[i].stopC = make(chan struct{})
 	}
+	s.fatalC = make(chan error, 1)
 	return s
+}
+
+func (s *serviceSupervisor) failureC() <-chan error {
+	if s == nil {
+		return nil
+	}
+	return s.fatalC
+}
+
+func (s *serviceSupervisor) notifyFatal(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	select {
+	case s.fatalC <- err:
+	default:
+	}
 }
 
 // registerTask reserves a role slot before starting its stopper task. Shutdown
@@ -225,6 +245,22 @@ func (s *serviceSupervisor) shutdown(ctx context.Context) error {
 				return
 			}
 		}
+	})
+	return s.shutdownErr
+}
+
+func (s *serviceSupervisor) shutdownAfterFatal(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	shutdownErr := s.shutdown(ctx)
+	if shutdownErr == nil || s.dynamicCNStop == nil {
+		return shutdownErr
+	}
+	s.fatalOnce.Do(func() {
+		cleanupCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		s.shutdownErr = errors.Join(s.shutdownErr, s.dynamicCNStop(cleanupCtx))
 	})
 	return s.shutdownErr
 }

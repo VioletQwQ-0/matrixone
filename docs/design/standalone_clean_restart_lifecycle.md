@@ -62,15 +62,21 @@ and the old-owner fence remains authoritative; the failure is not reported as
 a clean handoff. SIGKILL and process crashes do not send withdrawal and retain
 the existing owner-fence behaviour.
 
+An asynchronous configured-Proxy initialization failure is delivered to the
+main wait loop, so the process enters fatal cleanup without waiting for an
+unrelated signal or HAKeeper command. Fatal cleanup preserves role ordering,
+then reaps any dynamic CN children that were already started.
+
 If a role cannot close within its budget, dependent roles are not closed and
 the process exits non-zero so recovery can determine unknown commit state. A
 commit that has entered WAL durability is never described as rolled back merely
 because a client disconnected or a shutdown context expired.
 
-Dynamic CN children receive `SIGTERM` during the graceful phase. If that phase
-budget expires, every still-owned child receives `SIGKILL`, and shutdown waits
-for the corresponding child reap before returning; a non-zero owned PID is a
-terminal cleanup failure.
+Dynamic CN children receive `SIGTERM` during the graceful phase. The signal and
+Wait operation use the same child process handle. If that phase budget expires,
+every still-owned child receives `SIGKILL`, and shutdown waits for the
+corresponding child reap before returning; a non-zero owned PID is a terminal
+cleanup failure.
 
 ## Alternatives rejected
 

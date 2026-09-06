@@ -144,11 +144,12 @@ func main() {
 		startErr = errors.New("no configuration specified")
 	}
 	if startErr != nil {
-		cleanupErr := serviceLifecycle.shutdown(context.Background())
+		cleanupErr := serviceLifecycle.shutdownAfterFatal(context.Background())
 		// A failed lifecycle phase deliberately leaves its dependencies alive so
-		// the process can fail-stop without racing the in-flight owner.  Calling
-		// the global stopper here would cancel every role concurrently and undo
-		// the dependency ordering that cleanup just established.
+		// the process can fail-stop without racing the in-flight owner.  Fatal
+		// cleanup also reaps dynamic CN children after the ordered roles drain.
+		// Calling the global stopper here would cancel every role concurrently
+		// and undo the dependency ordering that cleanup just established.
 		if cleanupErr == nil {
 			stopper.Stop()
 		}
@@ -161,13 +162,22 @@ func main() {
 	logutil.GetGlobalLogger().Info("Shutdown complete")
 }
 
+func serviceFailureC() <-chan error {
+	if serviceLifecycle == nil {
+		return nil
+	}
+	return serviceLifecycle.failureC()
+}
+
 func waitSignalToStop(stopper *stopper.Stopper, shutdownC chan struct{}) error {
 	sigchan := make(chan os.Signal, 1)
 	signal.Notify(sigchan, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigchan)
 
 	go saveProfilesLoop(sigchan)
 
 	detail := "Starting shutdown..."
+	fatal := false
 	select {
 	case sig := <-sigchan:
 		detail += "signal: " + sig.String()
@@ -192,10 +202,18 @@ func waitSignalToStop(stopper *stopper.Stopper, shutdownC chan struct{}) error {
 		// shutdown cmd from ha keeper
 		time.Sleep(time.Second * 5)
 		detail += "ha keeper issues shutdown command"
+	case <-serviceFailureC():
+		detail += "service task failed"
+		fatal = true
 	}
 
 	logutil.GetGlobalLogger().Info(detail)
-	err := serviceLifecycle.shutdown(context.Background())
+	var err error
+	if fatal {
+		err = serviceLifecycle.shutdownAfterFatal(context.Background())
+	} else {
+		err = serviceLifecycle.shutdown(context.Background())
+	}
 	if err == nil {
 		// All business roles have already closed in dependency order.  The
 		// stopper now only releases observability and other process-level tasks.
@@ -572,9 +590,14 @@ func startProxyService(cfg *Config, stopper *stopper.Stopper) error {
 	}
 	err := stopper.RunNamedTask("proxy-service", func(ctx context.Context) {
 		var taskErr error
-		defer func() { finishTask(taskErr) }()
 		roleCtx, cancelRole := serviceLifecycle.roleContext(ctx, serviceRoleProxy)
 		defer cancelRole()
+		defer func() {
+			finishTask(taskErr)
+			if taskErr != nil && roleCtx.Err() == nil {
+				serviceLifecycle.notifyFatal(taskErr)
+			}
+		}()
 		err := runProxyAfterFileServiceInitialization(
 			roleCtx,
 			func(initCtx context.Context) (*fileservice.FileServices, error) {
@@ -617,7 +640,6 @@ func startProxyService(cfg *Config, stopper *stopper.Stopper) error {
 			if !errors.Is(err, context.Canceled) {
 				taskErr = err
 			}
-			return
 		}
 	})
 	if err != nil {

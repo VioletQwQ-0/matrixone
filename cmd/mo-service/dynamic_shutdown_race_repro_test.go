@@ -18,9 +18,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"runtime"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -37,6 +40,7 @@ type replacingDynamicChaosStopper struct{}
 func (s *replacingDynamicChaosStopper) Stop() error {
 	dynamicCNMu.Lock()
 	dynamicCNServicePIDs[0] = 101
+	dynamicCNServiceProcesses[0] = newTestDynamicChild(101)
 	dynamicCNMu.Unlock()
 	return nil
 }
@@ -62,29 +66,82 @@ func TestDynamicShutdownUsesFinalPIDSnapshotAfterChaosQuiesces(t *testing.T) {
 	setLaunchTestHooks(t)
 	dynamicCNMu.Lock()
 	dynamicCNServiceCommands = [][]string{{"mo-service", "-cfg", "cn.toml"}}
-	dynamicCNServicePIDs = []int{100}
 	dynamicChaosTester = &replacingDynamicChaosStopper{}
 	dynamicCNMu.Unlock()
+	setDynamicTestSlots(100)
 
 	type killedProcess struct {
 		pid    int
 		signal syscall.Signal
 	}
 	var killed []killedProcess
-	dynamicKill = func(pid int, signal syscall.Signal) error {
-		killed = append(killed, killedProcess{pid: pid, signal: signal})
+	var killedChild *dynamicCNChild
+	var waitedChild *dynamicCNChild
+	dynamicKill = func(child *dynamicCNChild, signal syscall.Signal) error {
+		killedChild = child
+		killed = append(killed, killedProcess{pid: child.pid, signal: signal})
 		return nil
 	}
-	dynamicWaitProcess = func(pid int) error {
-		require.Equal(t, 101, pid)
+	dynamicWaitProcess = func(child *dynamicCNChild) error {
+		waitedChild = child
+		require.Equal(t, 101, child.pid)
 		return nil
 	}
 
 	require.NoError(t, stopAllDynamicCNServicesGracefully(context.Background()))
 	require.Equal(t, []killedProcess{{pid: 101, signal: syscall.SIGTERM}}, killed)
+	require.Same(t, killedChild, waitedChild)
 	dynamicCNMu.RLock()
 	defer dynamicCNMu.RUnlock()
 	require.Zero(t, dynamicCNServicePIDs[0])
+}
+
+func TestDynamicShutdownDoesNotEscalateAfterWaitReapsChild(t *testing.T) {
+	setLaunchTestHooks(t)
+	child := &dynamicCNChild{
+		process: &testDynamicProcess{
+			processPID: 100,
+			waitedC:    make(chan struct{}),
+		},
+		pid: 100,
+	}
+	dynamicCNMu.Lock()
+	dynamicCNServicePIDs = []int{100}
+	dynamicCNServiceProcesses = []*dynamicCNChild{child}
+	dynamicCNMu.Unlock()
+
+	var signals []syscall.Signal
+	dynamicKill = func(_ *dynamicCNChild, signal syscall.Signal) error {
+		signals = append(signals, signal)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- stopAllDynamicCNServicesGracefully(ctx) }()
+
+	process := child.process.(*testDynamicProcess)
+	<-process.waitedC
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for {
+		dynamicCNMu.RLock()
+		cleared := dynamicCNServicePIDs[0] == 0 && dynamicCNServiceProcesses[0] == nil
+		dynamicCNMu.RUnlock()
+		if cleared {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("reaped child slot was not cleared before result consumption")
+		default:
+			runtime.Gosched()
+		}
+	}
+	cancel()
+
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Equal(t, []syscall.Signal{syscall.SIGTERM}, signals)
 }
 
 func TestDynamicShutdownRejectsHTTPStartAfterStopping(t *testing.T) {
@@ -101,14 +158,14 @@ func TestDynamicShutdownRejectsHTTPStartAfterStopping(t *testing.T) {
 	*httpListenAddr = "127.0.0.1:bad"
 	dynamicCNMu.Lock()
 	dynamicCNServiceCommands = [][]string{{"mo-service", "-cfg", "cn.toml"}}
-	dynamicCNServicePIDs = []int{0}
 	dynamicChaosTester = chaosStopper
 	dynamicCNMu.Unlock()
+	setDynamicTestSlots(0)
 
 	forkCalls := 0
-	dynamicForkExec = func(string, []string, *syscall.ProcAttr) (int, error) {
+	dynamicStartProcess = func(string, []string, *os.ProcAttr) (dynamicProcess, error) {
 		forkCalls++
-		return 101, nil
+		return &testDynamicProcess{processPID: 101}, nil
 	}
 	serverDone := make(chan struct{})
 	dynamicListenAndServe = func(string, http.Handler) error {
@@ -146,14 +203,14 @@ func TestDynamicShutdownRejectsChaosRestartAfterStopping(t *testing.T) {
 	t.Cleanup(chaosStopper.releaseStop)
 	dynamicCNMu.Lock()
 	dynamicCNServiceCommands = [][]string{{"mo-service", "-cfg", "cn.toml"}}
-	dynamicCNServicePIDs = []int{0}
 	dynamicChaosTester = chaosStopper
 	dynamicCNMu.Unlock()
+	setDynamicTestSlots(0)
 
 	forkCalls := 0
-	dynamicForkExec = func(string, []string, *syscall.ProcAttr) (int, error) {
+	dynamicStartProcess = func(string, []string, *os.ProcAttr) (dynamicProcess, error) {
 		forkCalls++
-		return 101, nil
+		return &testDynamicProcess{processPID: 101}, nil
 	}
 
 	shutdownDone := make(chan error, 1)

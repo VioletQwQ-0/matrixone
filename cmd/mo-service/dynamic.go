@@ -41,22 +41,60 @@ var (
 var (
 	dynamicCNMu                  sync.RWMutex
 	dynamicCNServicePIDs         []int
+	dynamicCNServiceProcesses    []*dynamicCNChild
 	dynamicCNServiceCommands     [][]string
 	dynamicChaosTester           dynamicChaosStopper
 	dynamicCNStopping            bool
 	launchStartDynamicCNServices = startDynamicCNServices
-	dynamicForkExec              = syscall.ForkExec
-	dynamicKill                  = syscall.Kill
-	dynamicListenAndServe        = http.ListenAndServe
-	dynamicWaitProcess           = func(pid int) error {
-		p, err := os.FindProcess(pid)
+	dynamicStartProcess          = func(argv0 string, argv []string, attr *os.ProcAttr) (dynamicProcess, error) {
+		process, err := os.StartProcess(argv0, argv, attr)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		_, err = p.Wait()
-		return err
+		return &osDynamicProcess{process: process}, nil
+	}
+	dynamicKill = func(child *dynamicCNChild, signal syscall.Signal) error {
+		if child == nil || child.process == nil {
+			return errors.New("dynamic cn child process is nil")
+		}
+		return child.process.signal(signal)
+	}
+	dynamicListenAndServe = http.ListenAndServe
+	dynamicWaitProcess    = func(child *dynamicCNChild) error {
+		if child == nil || child.process == nil {
+			return errors.New("dynamic cn child process is nil")
+		}
+		return child.process.wait()
 	}
 )
+
+type dynamicProcess interface {
+	pid() int
+	signal(syscall.Signal) error
+	wait() error
+}
+
+type osDynamicProcess struct {
+	process *os.Process
+}
+
+func (p *osDynamicProcess) pid() int {
+	return p.process.Pid
+}
+
+func (p *osDynamicProcess) signal(signal syscall.Signal) error {
+	return p.process.Signal(signal)
+}
+
+func (p *osDynamicProcess) wait() error {
+	_, err := p.process.Wait()
+	return err
+}
+
+type dynamicCNChild struct {
+	process dynamicProcess
+	pid     int
+}
 
 type dynamicChaosStopper interface {
 	Stop() error
@@ -138,6 +176,7 @@ func startDynamicCNServices(
 	}
 	dynamicCNServiceCommands = make([][]string, cfg.ServiceCount)
 	dynamicCNServicePIDs = make([]int, cfg.ServiceCount)
+	dynamicCNServiceProcesses = make([]*dynamicCNChild, cfg.ServiceCount)
 	dynamicCNMu.Unlock()
 	for i := 0; i < cfg.ServiceCount; i++ {
 		command := []string{
@@ -328,11 +367,17 @@ func stopDynamicCNByIndex(index int) error {
 	if pid == 0 {
 		return errors.New("dynamic cn is not running")
 	}
-	if err := dynamicKill(pid, syscall.SIGKILL); err != nil {
+	var child *dynamicCNChild
+	if index < len(dynamicCNServiceProcesses) {
+		child = dynamicCNServiceProcesses[index]
+	}
+	if err := dynamicKill(child, syscall.SIGKILL); err != nil {
 		return err
 	}
-	if dynamicCNServicePIDs[index] == pid {
+	if dynamicCNServicePIDs[index] == pid &&
+		index < len(dynamicCNServiceProcesses) && dynamicCNServiceProcesses[index] == child {
 		dynamicCNServicePIDs[index] = 0
+		dynamicCNServiceProcesses[index] = nil
 	}
 	return nil
 }
@@ -354,10 +399,10 @@ func startDynamicCNByIndex(index int) error {
 		return errors.New("dynamic cn is already running")
 	}
 	command := append([]string(nil), dynamicCNServiceCommands[index]...)
-	pid, err := dynamicForkExec(
+	process, err := dynamicStartProcess(
 		command[0],
 		command,
-		&syscall.ProcAttr{
+		&os.ProcAttr{
 			Dir: pwd,
 			Env: os.Environ(),
 			Sys: &syscall.SysProcAttr{
@@ -368,7 +413,15 @@ func startDynamicCNByIndex(index int) error {
 	if err != nil {
 		return err
 	}
-	dynamicCNServicePIDs[index] = pid
+	if process == nil {
+		return errors.New("dynamic cn child process is nil")
+	}
+	child := &dynamicCNChild{process: process, pid: process.pid()}
+	dynamicCNServicePIDs[index] = child.pid
+	if index >= len(dynamicCNServiceProcesses) {
+		dynamicCNServiceProcesses = append(dynamicCNServiceProcesses, make([]*dynamicCNChild, index-len(dynamicCNServiceProcesses)+1)...)
+	}
+	dynamicCNServiceProcesses[index] = child
 	return nil
 }
 
@@ -384,78 +437,83 @@ func stopAllDynamicCNServicesGracefully(ctx context.Context) error {
 	if chaosTester != nil {
 		errs = errors.Join(errs, chaosTester.Stop())
 	}
-	dynamicCNMu.RLock()
-	pids := append([]int(nil), dynamicCNServicePIDs...)
-	dynamicCNMu.RUnlock()
-	type result struct {
+	type childSnapshot struct {
 		index int
 		pid   int
-		err   error
+		child *dynamicCNChild
 	}
-	results := make(chan result, len(pids))
-	waitStarted := make([]bool, len(pids))
-	reaped := make([]bool, len(pids))
-	startWait := func(index, pid int) {
-		waitStarted[index] = true
-		go func() {
-			results <- result{index: index, pid: pid, err: dynamicWaitProcess(pid)}
-		}()
-	}
-	expected := 0
-	for i, pid := range pids {
+	dynamicCNMu.RLock()
+	children := make([]childSnapshot, 0, len(dynamicCNServicePIDs))
+	for index, pid := range dynamicCNServicePIDs {
 		if pid == 0 {
 			continue
 		}
-		expected++
-		if err := dynamicKill(pid, syscall.SIGTERM); err != nil {
+		var child *dynamicCNChild
+		if index < len(dynamicCNServiceProcesses) {
+			child = dynamicCNServiceProcesses[index]
+		}
+		children = append(children, childSnapshot{index: index, pid: pid, child: child})
+	}
+	dynamicCNMu.RUnlock()
+	type result struct {
+		childSnapshot
+		err error
+	}
+	results := make(chan result)
+	startWait := func(child childSnapshot) {
+		go func() {
+			err := dynamicWaitProcess(child.child)
+			if err == nil {
+				dynamicCNMu.Lock()
+				if child.index < len(dynamicCNServicePIDs) &&
+					dynamicCNServicePIDs[child.index] == child.pid &&
+					child.index < len(dynamicCNServiceProcesses) &&
+					dynamicCNServiceProcesses[child.index] == child.child {
+					dynamicCNServicePIDs[child.index] = 0
+					dynamicCNServiceProcesses[child.index] = nil
+				}
+				dynamicCNMu.Unlock()
+			}
+			results <- result{childSnapshot: child, err: err}
+		}()
+	}
+	for _, child := range children {
+		if err := dynamicKill(child.child, syscall.SIGTERM); err != nil {
 			errs = errors.Join(errs, err)
-			if err := dynamicKill(pid, syscall.SIGKILL); err != nil {
+			if err := dynamicKill(child.child, syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				errs = errors.Join(errs, err)
 			}
-			startWait(i, pid)
-			continue
 		}
-		startWait(i, pid)
+		startWait(child)
 	}
 	completed := 0
 	recordResult := func(r result) {
 		completed++
 		if r.err != nil {
 			errs = errors.Join(errs, r.err)
-			return
 		}
-		reaped[r.index] = true
-		dynamicCNMu.Lock()
-		if r.index < len(dynamicCNServicePIDs) && dynamicCNServicePIDs[r.index] == r.pid {
-			dynamicCNServicePIDs[r.index] = 0
-		}
-		dynamicCNMu.Unlock()
 	}
-	for completed < expected {
+	for completed < len(children) {
 		select {
 		case r := <-results:
 			recordResult(r)
 		case <-ctx.Done():
 			errs = errors.Join(errs, ctx.Err())
-			for i, pid := range pids {
-				if pid == 0 || reaped[i] {
-					continue
-				}
+			for _, child := range children {
 				dynamicCNMu.RLock()
-				owned := i < len(dynamicCNServicePIDs) && dynamicCNServicePIDs[i] == pid
+				owned := child.index < len(dynamicCNServicePIDs) &&
+					dynamicCNServicePIDs[child.index] == child.pid &&
+					child.index < len(dynamicCNServiceProcesses) &&
+					dynamicCNServiceProcesses[child.index] == child.child
 				dynamicCNMu.RUnlock()
 				if !owned {
 					continue
 				}
-				if err := dynamicKill(pid, syscall.SIGKILL); err != nil {
+				if err := dynamicKill(child.child, syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
 					errs = errors.Join(errs, err)
 				}
-				if !waitStarted[i] {
-					startWait(i, pid)
-					expected++
-				}
 			}
-			for completed < expected {
+			for completed < len(children) {
 				recordResult(<-results)
 			}
 		}
