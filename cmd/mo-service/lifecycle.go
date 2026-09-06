@@ -190,8 +190,8 @@ func (s *serviceSupervisor) shutdown(ctx context.Context) error {
 			timeout time.Duration
 		}{
 			{serviceRoleProxy, time.Minute},
-			{serviceRolePython, time.Minute},
 			{serviceRoleCN, time.Minute},
+			{serviceRolePython, time.Minute},
 			{serviceRoleTN, 4 * time.Minute},
 			{serviceRoleLog, time.Minute},
 		}

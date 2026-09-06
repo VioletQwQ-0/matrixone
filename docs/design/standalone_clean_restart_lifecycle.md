@@ -30,7 +30,7 @@ persistent formats, owner fences, or the default discovery timeout.
 The process supervisor owns role ordering and is the only caller that advances
 between dependency phases. Instances of the same role may close in parallel.
 Each role task is registered before it starts and reports one terminal result.
-The supervisor transitions through `proxy`, `python`, `cn`, `tn`, and `log`;
+The supervisor transitions through `proxy`, `cn`, `python`, `tn`, and `log`;
 an error or timeout stops the transition and returns a non-zero process result
 without invoking the global stopper to cancel still-needed dependencies.
 
@@ -67,6 +67,11 @@ the process exits non-zero so recovery can determine unknown commit state. A
 commit that has entered WAL durability is never described as rolled back merely
 because a client disconnected or a shutdown context expired.
 
+Dynamic CN children receive `SIGTERM` during the graceful phase. If that phase
+budget expires, every still-owned child receives `SIGKILL`, and shutdown waits
+for the corresponding child reap before returning; a non-zero owned PID is a
+terminal cleanup failure.
+
 ## Alternatives rejected
 
 * Cancelling the global stopper concurrently is simple but closes providers and
@@ -89,7 +94,8 @@ PR A contains only the process supervisor, role ordering, dynamic-CN graceful
 ## Validation matrix
 
 Unit and race tests cover ordering, role errors/timeouts, repeated shutdown,
-withdrawal failure, dynamic CN SIGTERM/SIGKILL, queued and active TN requests,
+withdrawal failure, dynamic CN SIGTERM/SIGKILL/reap, Python-provider ordering,
+queued and active TN requests,
 drain timeout, WAL success/error/close races, and exactly-once waiter
 completion. End-to-end validation uses a disposable standalone: graceful close
 with and without in-flight commits, ten same-UUID restarts with the default

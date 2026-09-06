@@ -389,38 +389,84 @@ func stopAllDynamicCNServicesGracefully(ctx context.Context) error {
 	dynamicCNMu.RUnlock()
 	type result struct {
 		index int
+		pid   int
 		err   error
 	}
 	results := make(chan result, len(pids))
-	count := 0
+	waitStarted := make([]bool, len(pids))
+	reaped := make([]bool, len(pids))
+	startWait := func(index, pid int) {
+		waitStarted[index] = true
+		go func() {
+			results <- result{index: index, pid: pid, err: dynamicWaitProcess(pid)}
+		}()
+	}
+	expected := 0
 	for i, pid := range pids {
 		if pid == 0 {
 			continue
 		}
-		count++
+		expected++
 		if err := dynamicKill(pid, syscall.SIGTERM); err != nil {
-			results <- result{index: i, err: err}
+			errs = errors.Join(errs, err)
+			if err := dynamicKill(pid, syscall.SIGKILL); err != nil {
+				errs = errors.Join(errs, err)
+			}
+			startWait(i, pid)
 			continue
 		}
-		go func(index, childPID int) {
-			results <- result{index: index, err: dynamicWaitProcess(childPID)}
-		}(i, pid)
+		startWait(i, pid)
 	}
-	for i := 0; i < count; i++ {
+	completed := 0
+	recordResult := func(r result) {
+		completed++
+		if r.err != nil {
+			errs = errors.Join(errs, r.err)
+			return
+		}
+		reaped[r.index] = true
+		dynamicCNMu.Lock()
+		if r.index < len(dynamicCNServicePIDs) && dynamicCNServicePIDs[r.index] == r.pid {
+			dynamicCNServicePIDs[r.index] = 0
+		}
+		dynamicCNMu.Unlock()
+	}
+	for completed < expected {
 		select {
 		case r := <-results:
-			if r.err != nil {
-				errs = errors.Join(errs, r.err)
-			} else {
-				dynamicCNMu.Lock()
-				if r.index < len(dynamicCNServicePIDs) && dynamicCNServicePIDs[r.index] == pids[r.index] {
-					dynamicCNServicePIDs[r.index] = 0
-				}
-				dynamicCNMu.Unlock()
-			}
+			recordResult(r)
 		case <-ctx.Done():
-			return errors.Join(errs, ctx.Err())
+			errs = errors.Join(errs, ctx.Err())
+			for i, pid := range pids {
+				if pid == 0 || reaped[i] {
+					continue
+				}
+				dynamicCNMu.RLock()
+				owned := i < len(dynamicCNServicePIDs) && dynamicCNServicePIDs[i] == pid
+				dynamicCNMu.RUnlock()
+				if !owned {
+					continue
+				}
+				if err := dynamicKill(pid, syscall.SIGKILL); err != nil {
+					errs = errors.Join(errs, err)
+				}
+				if !waitStarted[i] {
+					startWait(i, pid)
+					expected++
+				}
+			}
+			for completed < expected {
+				recordResult(<-results)
+			}
+			break
 		}
 	}
+	dynamicCNMu.RLock()
+	for _, pid := range dynamicCNServicePIDs {
+		if pid != 0 {
+			errs = errors.Join(errs, fmt.Errorf("dynamic cn child pid %d remains owned after shutdown", pid))
+		}
+	}
+	dynamicCNMu.RUnlock()
 	return errs
 }

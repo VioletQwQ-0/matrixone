@@ -538,18 +538,19 @@ type proxyServerLifecycle interface {
 	Close() error
 }
 
-func runProxyServerUntilCanceled(ctx context.Context, server proxyServerLifecycle) error {
+func runProxyServerUntilCanceled(ctx context.Context, server proxyServerLifecycle) (err error) {
 	defer func() {
-		if err := server.Close(); err != nil {
-			logutil.GetGlobalLogger().Error("failed to close proxy service", zap.Error(err))
+		if closeErr := server.Close(); closeErr != nil {
+			logutil.GetGlobalLogger().Error("failed to close proxy service", zap.Error(closeErr))
+			err = errors.Join(err, closeErr)
 		}
 	}()
-	if err := server.Start(); err != nil {
+	if startErr := server.Start(); startErr != nil {
 		if ctx.Err() != nil &&
-			(errors.Is(err, ctx.Err()) || errors.Is(err, context.Cause(ctx))) {
+			(errors.Is(startErr, ctx.Err()) || errors.Is(startErr, context.Cause(ctx))) {
 			return nil
 		}
-		return err
+		return startErr
 	}
 	<-ctx.Done()
 	return nil
@@ -607,7 +608,7 @@ func startProxyService(cfg *Config, stopper *stopper.Stopper) error {
 					panic(err)
 				}
 				if err := runProxyServerUntilCanceled(runCtx, s); err != nil {
-					panic(err)
+					taskErr = err
 				}
 				goruntime.KeepAlive(fs)
 			},
@@ -616,10 +617,7 @@ func startProxyService(cfg *Config, stopper *stopper.Stopper) error {
 			if !errors.Is(err, context.Canceled) {
 				taskErr = err
 			}
-			if errors.Is(err, context.Canceled) {
-				return
-			}
-			panic(err)
+			return
 		}
 	})
 	if err != nil {

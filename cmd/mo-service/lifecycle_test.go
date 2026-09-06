@@ -30,8 +30,8 @@ func TestServiceSupervisorStopsRolesInDependencyOrder(t *testing.T) {
 	var stopped []serviceRole
 	roles := []serviceRole{
 		serviceRoleProxy,
-		serviceRolePython,
 		serviceRoleCN,
+		serviceRolePython,
 		serviceRoleTN,
 		serviceRoleLog,
 	}
@@ -50,6 +50,74 @@ func TestServiceSupervisorStopsRolesInDependencyOrder(t *testing.T) {
 
 	require.NoError(t, s.shutdown(context.Background()))
 	require.Equal(t, roles, stopped)
+}
+
+func TestServiceSupervisorKeepsPythonProviderUntilCNDrains(t *testing.T) {
+	s := newServiceSupervisor()
+	var mu sync.Mutex
+	var events []string
+	record := func(event string) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	}
+
+	cnRelease := make(chan struct{})
+	cnStarted := make(chan struct{})
+	finishCN := s.registerTask(serviceRoleCN)
+	go func() {
+		ctx, cancel := s.roleContext(context.Background(), serviceRoleCN)
+		defer cancel()
+		<-ctx.Done()
+		record("cn-stop")
+		close(cnStarted)
+		<-cnRelease
+		record("cn-finish")
+		finishCN(nil)
+	}()
+
+	finishPython := s.registerTask(serviceRolePython)
+	go func() {
+		ctx, cancel := s.roleContext(context.Background(), serviceRolePython)
+		defer cancel()
+		<-ctx.Done()
+		record("python-stop")
+		finishPython(nil)
+	}()
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- s.shutdown(context.Background()) }()
+	select {
+	case <-cnStarted:
+	case <-time.After(time.Second):
+		t.Fatal("CN phase did not start")
+	}
+	mu.Lock()
+	eventsAtCN := append([]string(nil), events...)
+	mu.Unlock()
+	require.NotContains(t, eventsAtCN, "python-stop")
+
+	close(cnRelease)
+	select {
+	case err := <-shutdownDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not finish after CN drained")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	cnFinish := -1
+	pythonStop := -1
+	for i, event := range events {
+		switch event {
+		case "cn-finish":
+			cnFinish = i
+		case "python-stop":
+			pythonStop = i
+		}
+	}
+	require.GreaterOrEqual(t, cnFinish, 0)
+	require.Greater(t, pythonStop, cnFinish)
 }
 
 func TestServiceSupervisorRoleTimeoutDoesNotAdvanceDependency(t *testing.T) {
@@ -148,6 +216,32 @@ func TestServiceSupervisorProxyFailureStopsBeforeRoles(t *testing.T) {
 	select {
 	case <-s.roles[serviceRoleProxy].stopC:
 		t.Fatal("role shutdown advanced after builtin proxy failure")
+	default:
+	}
+}
+
+func TestServiceSupervisorConfiguredProxyFailureStopsBeforeCN(t *testing.T) {
+	oldProxy := cnProxy
+	cnProxy = nil
+	t.Cleanup(func() { cnProxy = oldProxy })
+
+	s := newServiceSupervisor()
+	proxyErr := errors.New("configured proxy close failed")
+	proxyServer := &testProxyServerLifecycle{closeErr: proxyErr}
+	finishProxy := s.registerTask(serviceRoleProxy)
+	go func() {
+		ctx, cancel := s.roleContext(context.Background(), serviceRoleProxy)
+		defer cancel()
+		finishProxy(runProxyServerUntilCanceled(ctx, proxyServer))
+	}()
+	finishCN := s.registerTask(serviceRoleCN)
+	defer finishCN(nil)
+
+	require.ErrorIs(t, s.shutdown(context.Background()), proxyErr)
+	require.Equal(t, 1, proxyServer.closeCalls)
+	select {
+	case <-s.roles[serviceRoleCN].stopC:
+		t.Fatal("CN phase opened after configured proxy close failed")
 	default:
 	}
 }

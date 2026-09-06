@@ -404,17 +404,98 @@ func TestStopAllDynamicCNServicesGracefullyWaitsAndHonorsContext(t *testing.T) {
 	dynamicCNServicePIDs = []int{43}
 	dynamicCNMu.Unlock()
 	release := make(chan struct{})
+	waitStarted := make(chan struct{})
+	forceKill := make(chan struct{})
 	waitDone := make(chan struct{})
+	dynamicKill = func(_ int, signal syscall.Signal) error {
+		if signal == syscall.SIGKILL {
+			close(forceKill)
+		}
+		return nil
+	}
 	dynamicWaitProcess = func(int) error {
+		close(waitStarted)
 		<-release
 		close(waitDone)
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- stopAllDynamicCNServicesGracefully(ctx) }()
+	<-waitStarted
 	cancel()
-	require.ErrorIs(t, stopAllDynamicCNServicesGracefully(ctx), context.Canceled)
+	<-forceKill
 	close(release)
 	<-waitDone
+	require.ErrorIs(t, <-shutdownDone, context.Canceled)
+	dynamicCNMu.RLock()
+	require.Zero(t, dynamicCNServicePIDs[0])
+	dynamicCNMu.RUnlock()
+}
+
+func TestStopAllDynamicCNServicesForceStopsAfterDeadline(t *testing.T) {
+	setLaunchTestHooks(t)
+	dynamicCNMu.Lock()
+	dynamicCNServicePIDs = []int{100}
+	dynamicCNMu.Unlock()
+
+	waitStarted := make(chan struct{})
+	forceKill := make(chan struct{})
+	var signals []syscall.Signal
+	dynamicKill = func(_ int, signal syscall.Signal) error {
+		signals = append(signals, signal)
+		if signal == syscall.SIGKILL {
+			close(forceKill)
+		}
+		return nil
+	}
+	dynamicWaitProcess = func(int) error {
+		close(waitStarted)
+		<-forceKill
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- stopAllDynamicCNServicesGracefully(ctx) }()
+	<-waitStarted
+	<-ctx.Done()
+	require.ErrorIs(t, <-done, context.DeadlineExceeded)
+	require.Equal(t, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}, signals)
+	dynamicCNMu.RLock()
+	require.Zero(t, dynamicCNServicePIDs[0])
+	dynamicCNMu.RUnlock()
+}
+
+func TestStopAllDynamicCNServicesEscalatesAfterSIGTERMFailure(t *testing.T) {
+	setLaunchTestHooks(t)
+	dynamicCNMu.Lock()
+	dynamicCNServicePIDs = []int{100}
+	dynamicCNMu.Unlock()
+
+	forceKill := make(chan struct{})
+	termErr := errors.New("SIGTERM failed")
+	var signals []syscall.Signal
+	dynamicKill = func(_ int, signal syscall.Signal) error {
+		signals = append(signals, signal)
+		if signal == syscall.SIGTERM {
+			return termErr
+		}
+		close(forceKill)
+		return nil
+	}
+	dynamicWaitProcess = func(int) error {
+		<-forceKill
+		return nil
+	}
+
+	err := stopAllDynamicCNServicesGracefully(context.Background())
+	require.ErrorIs(t, err, termErr)
+	require.Equal(t, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}, signals)
+	dynamicCNMu.RLock()
+	require.Zero(t, dynamicCNServicePIDs[0])
+	dynamicCNMu.RUnlock()
 }
 
 func TestStartClusterUsesConfiguredProxy(t *testing.T) {
