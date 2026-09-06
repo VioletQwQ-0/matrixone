@@ -299,6 +299,24 @@ func TestSortByVectorsJSONNumericPeersUseSecondaryKey(t *testing.T) {
 	require.Equal(t, []int64{1, 0, 2}, selectors)
 }
 
+func TestSortByVectorsJSONPeerGroupsUseSecondaryJSONKey(t *testing.T) {
+	mp := mpool.MustNewZero()
+	first := vector.NewVec(types.T_int64.ToType())
+	second := vector.NewVec(types.T_json.ToType())
+	defer first.Free(mp)
+	defer second.Free(mp)
+
+	require.NoError(t, vector.AppendFixedList(first, []int64{0, 0, 1, 1}, nil, mp))
+	for _, value := range []string{"2", "1", "4", "3"} {
+		appendJSON(t, second, mp, value)
+	}
+
+	selectors := []int64{0, 1, 2, 3}
+	SortByVectors(selectors, []*vector.Vector{first, second},
+		[]bool{false, false}, []bool{false, false})
+	require.Equal(t, []int64{1, 0, 3, 2}, selectors)
+}
+
 func TestSortByVectorsWithScratchMatchesConveniencePath(t *testing.T) {
 	mp := mpool.MustNewZero()
 	first := vector.NewVec(types.T_int64.ToType())
@@ -367,6 +385,37 @@ func BenchmarkSortForSQLOrderJSONWidePayload(b *testing.B) {
 			selectors[j] = int64(rows - j - 1)
 		}
 		SortForSQLOrder(false, false, false, selectors, vec)
+	}
+}
+
+func BenchmarkSortByVectorsJSONManySmallPeerGroups(b *testing.B) {
+	const rows = 8192
+	mp := mpool.MustNewZero()
+	first := vector.NewVec(types.T_int64.ToType())
+	second := vector.NewVec(types.T_json.ToType())
+	defer first.Free(mp)
+	defer second.Free(mp)
+
+	firstValues := make([]int64, rows)
+	for row := range firstValues {
+		firstValues[row] = int64(row / 2)
+		appendJSON(b, second, mp, strconv.Itoa(rows-row))
+	}
+	if err := vector.AppendFixedList(first, firstValues, nil, mp); err != nil {
+		b.Fatal(err)
+	}
+
+	selectors := make([]int64, rows)
+	b.ReportAllocs()
+	b.ReportMetric(rows, "rows/op")
+	b.ReportMetric(rows/2, "peer_groups/op")
+	b.ResetTimer()
+	for b.Loop() {
+		for row := range selectors {
+			selectors[row] = int64(row)
+		}
+		SortByVectors(selectors, []*vector.Vector{first, second},
+			[]bool{false, false}, []bool{false, false})
 	}
 }
 

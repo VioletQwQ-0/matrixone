@@ -856,8 +856,215 @@ func opBinaryBytesBytesToFixedNullSafe(
 	return nil
 }
 
-func compareJsonBytes(left, right []byte) int {
-	return bytejson.CompareByteJson(types.DecodeJson(left), types.DecodeJson(right))
+type jsonComparisonValue struct {
+	value bytejson.ByteJson
+	valid bool
+}
+
+type jsonComparisonVector struct {
+	scalar jsonComparisonValue
+	values []jsonComparisonValue
+}
+
+func (v jsonComparisonVector) at(row uint64) jsonComparisonValue {
+	if v.values == nil {
+		return v.scalar
+	}
+	return v.values[row]
+}
+
+func prepareJSONComparisonValue(raw []byte) jsonComparisonValue {
+	if len(raw) == 0 {
+		return jsonComparisonValue{}
+	}
+	value := types.DecodeJson(raw)
+	return jsonComparisonValue{
+		value: value,
+		valid: bytejson.IsValidByteJson(value),
+	}
+}
+
+func prepareJSONComparisonVector(
+	parameter vector.FunctionParameterWrapper[types.Varlena],
+	length int,
+	skipRows bool,
+	selectList *FunctionSelectList,
+) jsonComparisonVector {
+	if parameter.GetSourceVector().IsConst() {
+		raw, isNull := parameter.GetStrValue(0)
+		if isNull {
+			return jsonComparisonVector{}
+		}
+		return jsonComparisonVector{scalar: prepareJSONComparisonValue(raw)}
+	}
+
+	values := make([]jsonComparisonValue, length)
+	for row := 0; row < length; row++ {
+		if skipRows && selectList.Contains(uint64(row)) {
+			continue
+		}
+		raw, isNull := parameter.GetStrValue(uint64(row))
+		if !isNull {
+			values[row] = prepareJSONComparisonValue(raw)
+		}
+	}
+	return jsonComparisonVector{values: values}
+}
+
+func compareJSONComparisonValues(left, right jsonComparisonValue) int {
+	if left.valid {
+		if right.valid {
+			return bytejson.CompareByteJsonTrusted(left.value, right.value)
+		}
+		return -1
+	}
+	if right.valid {
+		return 1
+	}
+	return bytejson.CompareByteJson(left.value, right.value)
+}
+
+func opBinaryJSONBytesBytesToFixedNullSafe(
+	parameters []*vector.Vector,
+	result vector.FunctionResultWrapper,
+	_ *process.Process,
+	length int,
+	cmpFn func(int) bool,
+	_ *FunctionSelectList,
+) error {
+	result.UseOptFunctionParamFrame(2)
+	rs := vector.MustFunctionResult[bool](result)
+	p1 := vector.OptGetBytesParamFromWrapper(rs, 0, parameters[0])
+	p2 := vector.OptGetBytesParamFromWrapper(rs, 1, parameters[1])
+	rsVec := rs.GetResultVector()
+	rss := vector.MustFixedColNoTypeCheck[bool](rsVec)
+
+	left := prepareJSONComparisonVector(p1, length, false, nil)
+	right := prepareJSONComparisonVector(p2, length, false, nil)
+	// Result of <=> is never NULL.
+	rsVec.GetNulls().Reset()
+
+	for row := uint64(0); row < uint64(length); row++ {
+		_, null1 := p1.GetStrValue(row)
+		_, null2 := p2.GetStrValue(row)
+		if null1 && null2 {
+			rss[row] = true
+		} else if null1 || null2 {
+			rss[row] = false
+		} else {
+			rss[row] = cmpFn(compareJSONComparisonValues(left.at(row), right.at(row)))
+		}
+	}
+	return nil
+}
+
+func opBinaryJSONBytesBytesToFixed(
+	parameters []*vector.Vector,
+	result vector.FunctionResultWrapper,
+	_ *process.Process,
+	length int,
+	cmpFn func(int) bool,
+	selectList *FunctionSelectList,
+) error {
+	result.UseOptFunctionParamFrame(2)
+	rs := vector.MustFunctionResult[bool](result)
+	p1 := vector.OptGetBytesParamFromWrapper(rs, 0, parameters[0])
+	p2 := vector.OptGetBytesParamFromWrapper(rs, 1, parameters[1])
+	rsVec := rs.GetResultVector()
+	rss := vector.MustFixedColNoTypeCheck[bool](rsVec)
+
+	c1, c2 := parameters[0].IsConst(), parameters[1].IsConst()
+	rsNull := rsVec.GetNulls()
+	rsAnyNull := false
+	if selectList != nil {
+		if selectList.IgnoreAllRow() {
+			nulls.AddRange(rsNull, 0, uint64(length))
+			return nil
+		}
+		if !selectList.ShouldEvalAllRow() {
+			rsAnyNull = true
+			for i := range selectList.SelectList {
+				if selectList.Contains(uint64(i)) {
+					rsNull.Add(uint64(i))
+				}
+			}
+		}
+	}
+
+	skipRows := selectList != nil && !selectList.ShouldEvalAllRow()
+	left := prepareJSONComparisonVector(p1, length, skipRows, selectList)
+	right := prepareJSONComparisonVector(p2, length, skipRows, selectList)
+
+	if c1 && c2 {
+		_, null1 := p1.GetStrValue(0)
+		_, null2 := p2.GetStrValue(0)
+		if null1 || null2 {
+			nulls.AddRange(rsNull, 0, uint64(length))
+		} else {
+			r := cmpFn(compareJSONComparisonValues(left.at(0), right.at(0)))
+			for row := 0; row < length; row++ {
+				rss[row] = r
+			}
+		}
+		return nil
+	}
+
+	if c1 {
+		_, null1 := p1.GetStrValue(0)
+		if null1 {
+			nulls.AddRange(rsNull, 0, uint64(length))
+		} else if p2.WithAnyNullValue() {
+			nulls.Or(rsNull, parameters[1].GetNulls(), rsNull)
+			for row := 0; row < length; row++ {
+				if rsNull.Contains(uint64(row)) {
+					continue
+				}
+				rss[row] = cmpFn(compareJSONComparisonValues(left.at(uint64(row)), right.at(uint64(row))))
+			}
+		} else {
+			for row := 0; row < length; row++ {
+				rss[row] = cmpFn(compareJSONComparisonValues(left.at(uint64(row)), right.at(uint64(row))))
+			}
+		}
+		return nil
+	}
+
+	if c2 {
+		_, null2 := p2.GetStrValue(0)
+		if null2 {
+			nulls.AddRange(rsNull, 0, uint64(length))
+		} else if p1.WithAnyNullValue() {
+			nulls.Or(rsNull, parameters[0].GetNulls(), rsNull)
+			for row := 0; row < length; row++ {
+				if rsNull.Contains(uint64(row)) {
+					continue
+				}
+				rss[row] = cmpFn(compareJSONComparisonValues(left.at(uint64(row)), right.at(uint64(row))))
+			}
+		} else {
+			for row := 0; row < length; row++ {
+				rss[row] = cmpFn(compareJSONComparisonValues(left.at(uint64(row)), right.at(uint64(row))))
+			}
+		}
+		return nil
+	}
+
+	if p1.WithAnyNullValue() || p2.WithAnyNullValue() || rsAnyNull {
+		nulls.Or(rsNull, parameters[0].GetNulls(), rsNull)
+		nulls.Or(rsNull, parameters[1].GetNulls(), rsNull)
+		for row := 0; row < length; row++ {
+			if rsNull.Contains(uint64(row)) {
+				continue
+			}
+			rss[row] = cmpFn(compareJSONComparisonValues(left.at(uint64(row)), right.at(uint64(row))))
+		}
+		return nil
+	}
+
+	for row := 0; row < length; row++ {
+		rss[row] = cmpFn(compareJSONComparisonValues(left.at(uint64(row)), right.at(uint64(row))))
+	}
+	return nil
 }
 
 func float32ComparisonNormalizers(leftScale, rightScale int32) (
@@ -949,8 +1156,8 @@ func nullSafeEqualFn(parameters []*vector.Vector, result vector.FunctionResultWr
 		if parameters[0].IsPreparedJSONComparisonParam() || parameters[1].IsPreparedJSONComparisonParam() {
 			return comparePreparedJSON(parameters, rs, proc, length, true, func(c int) bool { return c == 0 }, selectList)
 		}
-		return opBinaryBytesBytesToFixedNullSafe(parameters, rs, proc, length, func(a, b []byte) bool {
-			return compareJsonBytes(a, b) == 0
+		return opBinaryJSONBytesBytesToFixedNullSafe(parameters, rs, proc, length, func(c int) bool {
+			return c == 0
 		}, selectList)
 	case types.T_char:
 		return opBinaryBytesBytesToFixedNullSafe(parameters, rs, proc, length, func(a, b []byte) bool {
@@ -1122,8 +1329,8 @@ func equalFn(parameters []*vector.Vector, result vector.FunctionResultWrapper, p
 		if parameters[0].IsPreparedJSONComparisonParam() || parameters[1].IsPreparedJSONComparisonParam() {
 			return comparePreparedJSON(parameters, rs, proc, length, false, func(c int) bool { return c == 0 }, selectList)
 		}
-		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
-			return compareJsonBytes(a, b) == 0
+		return opBinaryJSONBytesBytesToFixed(parameters, rs, proc, length, func(c int) bool {
+			return c == 0
 		}, selectList)
 	case types.T_char:
 		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
@@ -1539,8 +1746,8 @@ func greatThanFn(parameters []*vector.Vector, result vector.FunctionResultWrappe
 			return a > b
 		}, selectList)
 	case types.T_json:
-		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
-			return compareJsonBytes(a, b) > 0
+		return opBinaryJSONBytesBytesToFixed(parameters, rs, proc, length, func(c int) bool {
+			return c > 0
 		}, selectList)
 	case types.T_char:
 		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
@@ -1705,8 +1912,8 @@ func greatEqualFn(parameters []*vector.Vector, result vector.FunctionResultWrapp
 			return a >= b
 		}, selectList)
 	case types.T_json:
-		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
-			return compareJsonBytes(a, b) >= 0
+		return opBinaryJSONBytesBytesToFixed(parameters, rs, proc, length, func(c int) bool {
+			return c >= 0
 		}, selectList)
 	case types.T_char:
 		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
@@ -1877,8 +2084,8 @@ func notEqualFn(parameters []*vector.Vector, result vector.FunctionResultWrapper
 		if parameters[0].IsPreparedJSONComparisonParam() || parameters[1].IsPreparedJSONComparisonParam() {
 			return comparePreparedJSON(parameters, rs, proc, length, false, func(c int) bool { return c != 0 }, selectList)
 		}
-		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
-			return compareJsonBytes(a, b) != 0
+		return opBinaryJSONBytesBytesToFixed(parameters, rs, proc, length, func(c int) bool {
+			return c != 0
 		}, selectList)
 	case types.T_char:
 		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
@@ -2043,8 +2250,8 @@ func lessThanFn(parameters []*vector.Vector, result vector.FunctionResultWrapper
 			return a < b
 		}, selectList)
 	case types.T_json:
-		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
-			return compareJsonBytes(a, b) < 0
+		return opBinaryJSONBytesBytesToFixed(parameters, rs, proc, length, func(c int) bool {
+			return c < 0
 		}, selectList)
 	case types.T_char:
 		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
@@ -2209,8 +2416,8 @@ func lessEqualFn(parameters []*vector.Vector, result vector.FunctionResultWrappe
 			return a <= b
 		}, selectList)
 	case types.T_json:
-		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {
-			return compareJsonBytes(a, b) <= 0
+		return opBinaryJSONBytesBytesToFixed(parameters, rs, proc, length, func(c int) bool {
+			return c <= 0
 		}, selectList)
 	case types.T_char:
 		return opBinaryBytesBytesToFixed[bool](parameters, rs, proc, length, func(a, b []byte) bool {

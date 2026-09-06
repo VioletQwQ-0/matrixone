@@ -16,6 +16,7 @@ package function
 
 import (
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -671,6 +672,91 @@ func BenchmarkJSONBooleanComparison(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+func BenchmarkJSONDirectComparisonWideAndNestedArrays(b *testing.B) {
+	proc := testutil.NewProcess(b)
+	defer proc.Free()
+	const (
+		length   = 1024
+		elements = 2048
+	)
+
+	encodeArray := func(first string, nested bool) []byte {
+		var builder strings.Builder
+		builder.WriteByte('[')
+		builder.WriteString(first)
+		for i := 0; i < elements; i++ {
+			builder.WriteByte(',')
+			if nested {
+				builder.WriteString("[[")
+				builder.WriteString(strconv.Itoa(i))
+				builder.WriteString("]]")
+			} else {
+				builder.WriteString(strconv.Itoa(i))
+			}
+		}
+		builder.WriteByte(']')
+		bj, err := bytejson.ParseFromString(builder.String())
+		require.NoError(b, err)
+		data, err := types.EncodeJson(bj)
+		require.NoError(b, err)
+		return data
+	}
+
+	run := func(b *testing.B, left, right []byte, leftConst bool) {
+		var (
+			leftVector  *vector.Vector
+			rightVector *vector.Vector
+		)
+		if leftConst {
+			var err error
+			leftVector, err = vector.NewConstBytes(types.T_json.ToType(), left, length, proc.Mp())
+			require.NoError(b, err)
+			rightVector = vector.NewVec(types.T_json.ToType())
+			defer leftVector.Free(proc.Mp())
+			defer rightVector.Free(proc.Mp())
+			for row := 0; row < length; row++ {
+				require.NoError(b, vector.AppendBytes(rightVector, right, false, proc.Mp()))
+			}
+		} else {
+			leftVector = vector.NewVec(types.T_json.ToType())
+			var err error
+			rightVector, err = vector.NewConstBytes(types.T_json.ToType(), right, length, proc.Mp())
+			require.NoError(b, err)
+			defer leftVector.Free(proc.Mp())
+			defer rightVector.Free(proc.Mp())
+			for row := 0; row < length; row++ {
+				require.NoError(b, vector.AppendBytes(leftVector, left, false, proc.Mp()))
+			}
+		}
+
+		result := vector.NewFunctionResultWrapper(types.T_bool.ToType(), proc.Mp()).(*vector.FunctionResult[bool])
+		defer result.Free()
+		require.NoError(b, result.PreExtendAndReset(length))
+		b.ReportAllocs()
+		b.ReportMetric(length, "rows/op")
+		b.ResetTimer()
+		for b.Loop() {
+			if err := result.PreExtendAndReset(length); err != nil {
+				b.Fatal(err)
+			}
+			if err := lessThanFn([]*vector.Vector{leftVector, rightVector}, result, proc, length, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+
+	wideLeft := encodeArray("0", false)
+	wideRight := encodeArray("1", false)
+	nestedLeft := encodeArray("0", true)
+	nestedRight := encodeArray("1", true)
+	b.Run("wide_array_column_vs_constant_first_element", func(b *testing.B) {
+		run(b, wideLeft, wideRight, false)
+	})
+	b.Run("nested_array_constant_vs_column_first_element", func(b *testing.B) {
+		run(b, nestedLeft, nestedRight, true)
+	})
 }
 
 func TestCharEqualityIgnoresRepresentationPadding(t *testing.T) {
