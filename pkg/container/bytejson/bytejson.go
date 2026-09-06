@@ -377,7 +377,7 @@ func (bj ByteJson) getValEntry(off int) ByteJson {
 const (
 	persistedBitPrefix         = "~mo:json-bit:v1:"
 	mysqlOpaquePrefix          = "base64:type"
-	MySQLOpaqueProtocolVersion = defines.MORPCVersion46
+	MySQLOpaqueProtocolVersion = defines.MORPCVersion50
 )
 
 // NewMySQLOpaque creates the JSON representation MySQL uses for binary SQL
