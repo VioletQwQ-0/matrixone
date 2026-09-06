@@ -1062,6 +1062,41 @@ func TestBinaryProtocolPrepareParamKind(t *testing.T) {
 	}
 }
 
+func TestBinaryProtocolPrepareParamConcreteType(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		mysqlType  defines.MysqlType
+		isUnsigned bool
+		want       types.T
+		supported  bool
+	}{
+		{name: "signed tiny", mysqlType: defines.MYSQL_TYPE_TINY, want: types.T_int8, supported: true},
+		{name: "unsigned tiny", mysqlType: defines.MYSQL_TYPE_TINY, isUnsigned: true, want: types.T_uint8, supported: true},
+		{name: "signed bit", mysqlType: defines.MYSQL_TYPE_BIT, want: types.T_bit, supported: true},
+		{name: "unsigned bit", mysqlType: defines.MYSQL_TYPE_BIT, isUnsigned: true, want: types.T_uint64, supported: true},
+		{name: "year", mysqlType: defines.MYSQL_TYPE_YEAR, want: types.T_year, supported: true},
+		{name: "float", mysqlType: defines.MYSQL_TYPE_FLOAT, want: types.T_float32, supported: true},
+		{name: "double", mysqlType: defines.MYSQL_TYPE_DOUBLE, want: types.T_float64, supported: true},
+		{name: "decimal", mysqlType: defines.MYSQL_TYPE_NEWDECIMAL, want: types.T_decimal256, supported: true},
+		{name: "text", mysqlType: defines.MYSQL_TYPE_VAR_STRING, want: types.T_text, supported: true},
+		{name: "blob", mysqlType: defines.MYSQL_TYPE_BLOB, want: types.T_blob, supported: true},
+		{name: "json", mysqlType: defines.MYSQL_TYPE_JSON, want: types.T_json, supported: true},
+		{name: "date", mysqlType: defines.MYSQL_TYPE_DATE, want: types.T_date, supported: true},
+		{name: "time", mysqlType: defines.MYSQL_TYPE_TIME, want: types.T_time, supported: true},
+		{name: "datetime", mysqlType: defines.MYSQL_TYPE_DATETIME, want: types.T_datetime, supported: true},
+		{name: "timestamp", mysqlType: defines.MYSQL_TYPE_TIMESTAMP, want: types.T_timestamp, supported: true},
+		{name: "enum", mysqlType: defines.MYSQL_TYPE_ENUM, want: types.T_enum, supported: true},
+		{name: "geometry", mysqlType: defines.MYSQL_TYPE_GEOMETRY, want: types.T_geometry, supported: true},
+		{name: "unknown", mysqlType: defines.MYSQL_TYPE_NULL, want: types.T_any},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, supported := binaryProtocolPrepareParamConcreteType(test.mysqlType, test.isUnsigned)
+			require.Equal(t, test.want, got)
+			require.Equal(t, test.supported, supported)
+		})
+	}
+}
+
 func TestBinaryProtocolPrepareParamBinaryStringMetadataNoBlobDoesNotAllocate(t *testing.T) {
 	const paramCount = 64
 	paramTypes := make([]byte, paramCount*2)

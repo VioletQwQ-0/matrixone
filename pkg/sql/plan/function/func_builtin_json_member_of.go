@@ -91,7 +91,7 @@ func jsonMemberOfRightHasInvalidRuntimeType(parameter *vector.Vector, row int) b
 	}
 	preparedType := parameter.GetPrepareParamType()
 	if preparedType != types.T_any {
-		return preparedType != types.T_json && !preparedType.IsMySQLString()
+		return !jsonMemberOfRightSupportsType(preparedType.ToType())
 	}
 	return parameter.GetPrepareParamKindAt(row) != vector.PrepareParamNone
 }
@@ -124,12 +124,6 @@ func jsonMemberOfCheckFn(_ []overload, inputs []types.Type) checkResult {
 		// parse for its value.
 		finalTypes[0] = types.T_varchar.ToType()
 		needsCast = true
-	}
-	if jsonMemberOfRightHasBinaryDomain(inputs[1]) {
-		return newCheckResultWithInvalidJSONCharset(2)
-	}
-	if !jsonMemberOfRightSupportsType(inputs[1]) {
-		return newCheckResultWithInvalidJSONArgument(2)
 	}
 	if inputs[1].Oid == types.T_any {
 		finalTypes[1] = types.T_varchar.ToType()
@@ -171,11 +165,20 @@ func (operand *jsonMemberOfValueOperand) documentAt(row uint64, proc *process.Pr
 		if proc != nil && proc.Ctx != nil {
 			ctx = proc.Ctx
 		}
+		kind := operand.parameter.GetPrepareParamKindAt(int(row))
+		paramType := operand.parameter.GetPrepareParamType()
+		if paramType == types.T_any && kind == vector.PrepareParamNone {
+			// A non-prepared binary/text vector has no prepared metadata. Use
+			// its concrete OID so static BINARY/VARBINARY/BLOB values retain
+			// their opaque JSON domain, while prepared text transport with a
+			// numeric/Boolean kind still follows that kind below.
+			paramType = operand.parameter.GetType().Oid
+		}
 		elem, err = PreparedJSONScalarValue(
 			ctx,
 			operand.parameter.GetBytesAt(int(row)),
-			operand.parameter.GetPrepareParamKindAt(int(row)),
-			operand.parameter.GetPrepareParamType(),
+			kind,
+			paramType,
 			operand.parameter.GetIsBinaryStringAt(int(row)),
 		)
 	} else if operand.parameter.GetType().Oid == types.T_year {
@@ -189,7 +192,8 @@ func (operand *jsonMemberOfValueOperand) documentAt(row uint64, proc *process.Pr
 	}
 	if err == nil {
 		operand.document, err = bytejson.CreateByteJSON(elem)
-		if err == nil && operand.parameter.GetType().Oid == types.T_json {
+		if err == nil && (operand.parameter.GetType().Oid == types.T_json ||
+			operand.parameter.GetPrepareParamType() == types.T_json) {
 			err = bytejson.ValidateJSONDocumentDepth(operand.document)
 		}
 	}
@@ -222,23 +226,20 @@ func jsonMemberOf(
 	left := jsonMemberOfValueOperand{parameter: parameters[0]}
 	right := jsonOverlapOperand{
 		parameter:    parameters[1],
-		wrapper:      vector.OptGetBytesParamFromWrapper(rs, 1, parameters[1]),
 		functionName: jsonMemberOfFunctionName,
+	}
+	// Static non-string RHS domains are rejected at execution time so a SQL
+	// NULL left operand can short-circuit them. Do not build a varlena wrapper
+	// for fixed-width vectors; GenerateFunctionStrParameter assumes varlena
+	// storage and would inspect the invalid representation before execution.
+	if parameters[1].GetType().Oid.IsMySQLString() || parameters[1].GetType().Oid == types.T_json {
+		right.wrapper = vector.OptGetBytesParamFromWrapper(rs, 1, parameters[1])
 	}
 	defer right.prepared.clear()
 
 	evaluableRows := 0
-	for row := uint64(0); row < uint64(length); row++ {
-		if selectList != nil && !selectList.ShouldEvalAllRow() && selectList.Contains(row) {
-			continue
-		}
-		if parameters[0].IsNull(row) {
-			continue
-		}
-		if _, isNull := right.wrapper.GetStrValue(row); !isNull {
-			evaluableRows++
-		}
-	}
+	usePreparedArray := false
+	preparedArrayDecisionReady := false
 
 	for row := uint64(0); row < uint64(length); row++ {
 		if selectList != nil && !selectList.ShouldEvalAllRow() && selectList.Contains(row) {
@@ -246,13 +247,6 @@ func jsonMemberOf(
 				return err
 			}
 			continue
-		}
-
-		if jsonMemberOfRightIsBinary(parameters[1], int(row)) {
-			return jsonMemberOfInvalidRightType(proc, true)
-		}
-		if jsonMemberOfRightHasInvalidRuntimeType(parameters[1], int(row)) {
-			return jsonMemberOfInvalidRightType(proc, false)
 		}
 
 		leftDocument, leftNull, err := left.documentAt(row, proc)
@@ -265,6 +259,22 @@ func jsonMemberOf(
 			}
 			continue
 		}
+		if parameters[1].IsNull(row) {
+			if err := rs.Append(0, true); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// SQL NULL on the left short-circuits the RHS completely. Keep all RHS
+		// domain and JSON parsing below that branch so invalid numeric, binary,
+		// and malformed JSON RHS values do not leak through NULL results.
+		if jsonMemberOfRightIsBinary(parameters[1], int(row)) {
+			return jsonMemberOfInvalidRightType(proc, true)
+		}
+		if jsonMemberOfRightHasInvalidRuntimeType(parameters[1], int(row)) {
+			return jsonMemberOfInvalidRightType(proc, false)
+		}
 
 		rightDocument, rightNull, err := right.documentAt(row, proc)
 		if err != nil {
@@ -276,10 +286,17 @@ func jsonMemberOf(
 			}
 			continue
 		}
+		if !preparedArrayDecisionReady && right.parameter.IsConst() &&
+			rightDocument.Type == bytejson.TpCodeArray &&
+			rightDocument.GetElemCnt() > jsonOverlapLinearCompareBudget {
+			evaluableRows = jsonMemberOfCountEvaluableRows(parameters[0], length, selectList)
+			usePreparedArray = jsonOverlapShouldPrepareScalar(rightDocument.GetElemCnt(), evaluableRows)
+			preparedArrayDecisionReady = true
+		}
 
 		matched := false
 		if rightDocument.Type == bytejson.TpCodeArray {
-			if right.parameter.IsConst() && jsonOverlapShouldPrepareScalar(rightDocument.GetElemCnt(), evaluableRows) {
+			if right.parameter.IsConst() && usePreparedArray {
 				right.prepared.ensure(rightDocument)
 				matched = jsonOverlapPreparedArrayContains(rightDocument, &right.prepared, leftDocument)
 			} else {
@@ -297,4 +314,25 @@ func jsonMemberOf(
 		}
 	}
 	return nil
+}
+
+// jsonMemberOfCountEvaluableRows is intentionally called only after the
+// constant RHS has been decoded and proven large enough to consider indexing.
+// Scalar, small-array, and non-constant RHS executions therefore retain one
+// evaluation pass instead of paying an unconditional batch scan.
+func jsonMemberOfCountEvaluableRows(
+	left *vector.Vector,
+	length int,
+	selectList *FunctionSelectList,
+) int {
+	count := 0
+	for row := uint64(0); row < uint64(length); row++ {
+		if selectList != nil && !selectList.ShouldEvalAllRow() && selectList.Contains(row) {
+			continue
+		}
+		if !left.IsNull(row) {
+			count++
+		}
+	}
+	return count
 }

@@ -105,6 +105,12 @@ func preparedTextToJSONValueWithType(
 	}
 
 	switch paramType {
+	case types.T_json:
+		parsed, err := types.ParseSliceToByteJson([]byte(value))
+		if err != nil {
+			return nil, err
+		}
+		return parsed, nil
 	case types.T_int8:
 		return parseSigned(8)
 	case types.T_int16:
@@ -143,8 +149,18 @@ func preparedTextToJSONValueWithType(
 		// A prepared YEAR is a numeric MEMBER OF scalar, even though the
 		// ordinary JSON constructor path formats YEAR as a temporal string.
 		return parseUnsigned(16)
-	case types.T_char, types.T_varchar, types.T_text:
+	case types.T_bit:
+		return parseUnsigned(64)
+	case types.T_date:
+		return newTypedByteJson(bytejson.TpCodeDate, value), nil
+	case types.T_time:
+		return newTypedByteJson(bytejson.TpCodeTime, value), nil
+	case types.T_datetime, types.T_timestamp:
+		return newTypedByteJson(bytejson.TpCodeDatetime, value), nil
+	case types.T_char, types.T_varchar, types.T_text, types.T_enum, types.T_geometry:
 		return value, nil
+	case types.T_binary, types.T_varbinary, types.T_blob:
+		return newTypedByteJson(bytejson.TpCodeOpaque, value), nil
 	default:
 		return nil, moerr.NewInternalErrorf(
 			ctx, "unsupported prepared parameter type %s", paramType.String())

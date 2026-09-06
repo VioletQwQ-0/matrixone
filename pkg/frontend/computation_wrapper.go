@@ -897,6 +897,64 @@ func binaryProtocolPrepareParamKind(
 	}
 }
 
+// binaryProtocolPrepareParamConcreteType retains the protocol's SQL domain
+// for direct JSON-comparison parameters. The text vector is only a transport
+// representation; using it as the semantic type would turn TINYINT 0/1 into
+// Boolean guesses and would erase JSON and temporal domains.
+func binaryProtocolPrepareParamConcreteType(
+	mysqlType defines.MysqlType,
+	isUnsigned bool,
+) (types.T, bool) {
+	signed := func(signedType, unsignedType types.T) types.T {
+		if isUnsigned {
+			return unsignedType
+		}
+		return signedType
+	}
+	switch mysqlType {
+	case defines.MYSQL_TYPE_TINY:
+		return signed(types.T_int8, types.T_uint8), true
+	case defines.MYSQL_TYPE_SHORT:
+		return signed(types.T_int16, types.T_uint16), true
+	case defines.MYSQL_TYPE_INT24, defines.MYSQL_TYPE_LONG:
+		return signed(types.T_int32, types.T_uint32), true
+	case defines.MYSQL_TYPE_LONGLONG:
+		return signed(types.T_int64, types.T_uint64), true
+	case defines.MYSQL_TYPE_BIT:
+		return signed(types.T_bit, types.T_uint64), true
+	case defines.MYSQL_TYPE_YEAR:
+		return types.T_year, true
+	case defines.MYSQL_TYPE_FLOAT:
+		return types.T_float32, true
+	case defines.MYSQL_TYPE_DOUBLE:
+		return types.T_float64, true
+	case defines.MYSQL_TYPE_DECIMAL, defines.MYSQL_TYPE_NEWDECIMAL:
+		return types.T_decimal256, true
+	case defines.MYSQL_TYPE_VARCHAR, defines.MYSQL_TYPE_VAR_STRING,
+		defines.MYSQL_TYPE_STRING, defines.MYSQL_TYPE_TEXT, defines.MYSQL_TYPE_SET:
+		return types.T_text, true
+	case defines.MYSQL_TYPE_BLOB, defines.MYSQL_TYPE_TINY_BLOB,
+		defines.MYSQL_TYPE_MEDIUM_BLOB, defines.MYSQL_TYPE_LONG_BLOB:
+		return types.T_blob, true
+	case defines.MYSQL_TYPE_JSON:
+		return types.T_json, true
+	case defines.MYSQL_TYPE_DATE:
+		return types.T_date, true
+	case defines.MYSQL_TYPE_TIME:
+		return types.T_time, true
+	case defines.MYSQL_TYPE_DATETIME:
+		return types.T_datetime, true
+	case defines.MYSQL_TYPE_TIMESTAMP:
+		return types.T_timestamp, true
+	case defines.MYSQL_TYPE_ENUM:
+		return types.T_enum, true
+	case defines.MYSQL_TYPE_GEOMETRY:
+		return types.T_geometry, true
+	default:
+		return types.T_any, false
+	}
+}
+
 // binaryProtocolPrepareParamIsBinaryString identifies protocol domains whose
 // payload is an opaque byte string rather than a character string.  The
 // binary-string sidecar is intentionally independent from PrepareParamKind so
@@ -1465,15 +1523,22 @@ func initExecuteStmtParamWithResolverInSession(
 			isUnsigned := prepareStmt.ParamTypes[i*2+1]&0x80 != 0
 			kind := binaryProtocolPrepareParamKind(
 				mysqlType, isUnsigned, prepareStmt.params.GetRawBytesAt(i))
-			prepareStmt.paramKinds[i] = kind
 			if _, relevant := slices.BinarySearch(
 				prepareStmt.jsonComparisonParamPositions, int32(i)); relevant {
-				concreteType := runtimeParamTypes[i].Oid
-				if expectedKind, supported := vector.PrepareParamKindForType(concreteType); supported && expectedKind == kind {
+				concreteType, supported := binaryProtocolPrepareParamConcreteType(mysqlType, isUnsigned)
+				if !supported {
+					concreteType = runtimeParamTypes[i].Oid
+				}
+				if expectedKind, supported := vector.PrepareParamKindForType(concreteType); supported {
+					// For JSON comparison operands, the protocol type is the
+					// source of truth. In particular, TINYINT 0/1 must not inherit
+					// the generic driver Boolean compatibility heuristic.
+					kind = expectedKind
 					prepareStmt.paramConcreteTypes[i] = concreteType
 					hasConcreteType = true
 				}
 			}
+			prepareStmt.paramKinds[i] = kind
 			for directPositionIndex < len(directResultPositions) &&
 				directResultPositions[directPositionIndex] < int32(i) {
 				directPositionIndex++
@@ -2344,10 +2409,22 @@ func executeUserParamConcreteType(
 	// particular, arbitrary Go integer widths are intentionally normalized to
 	// BIGINT/UBIGINT rather than treated as proof of an SQL assignment type.
 	concreteType := types.T(inferUserDefinedVarType(param).Id)
-	if expectedKind, supported := vector.PrepareParamKindForType(concreteType); supported && expectedKind == kind {
+	if expectedKind, supported := untypedUserParamKindForType(concreteType); supported && expectedKind == kind {
 		return concreteType, nil
 	}
 	return types.T_any, nil
+}
+
+func untypedUserParamKindForType(typ types.T) (vector.PrepareParamKind, bool) {
+	switch typ {
+	case types.T_int8, types.T_int16, types.T_int32, types.T_int64,
+		types.T_uint8, types.T_uint16, types.T_uint32, types.T_uint64:
+		return vector.PrepareParamInteger, true
+	case types.T_float32:
+		return vector.PrepareParamFloat, true
+	default:
+		return vector.PrepareParamNone, false
+	}
 }
 
 func buildExecuteUserParams(

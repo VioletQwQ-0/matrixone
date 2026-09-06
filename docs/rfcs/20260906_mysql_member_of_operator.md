@@ -24,7 +24,7 @@ PR's review history and is intentionally not self-certified here.
 ## Compatibility target and SQL contract
 
 The grammar and observable behavior target MySQL 8-compatible syntax and the
-MySQL 9.6 compatibility cases used for this PR's differential review:
+compatibility cases captured in this design revision:
 
 - Both `MEMBER OF` and the existing-compatible `MEMBER` shorthand are accepted;
   `OF` is optional only in that shorthand. `NOT MEMBER OF` is not introduced by
@@ -60,11 +60,12 @@ MySQL 9.6 compatibility cases used for this PR's differential review:
 
 The MySQL grammar owns the operator spelling and builds the existing
 `tree.FuncExpr` representation with function name `member of`. The planner
-resolves it through `INTERNAL_JSON_MEMBER_OF`, checks both operands before
-execution, and retains the direct prepared-parameter metadata on the left
-operand. The type checker is deliberately asymmetric: the left side accepts
-JSON-convertible scalar values, while the right side accepts only JSON or text
-JSON documents.
+resolves it through `INTERNAL_JSON_MEMBER_OF` and retains the direct
+prepared-parameter metadata on the left operand. Static operand contracts are
+checked during binding; row-sensitive RHS domain and provenance checks remain in
+execution so a SQL `NULL` left operand can short-circuit them. The type checker is
+deliberately asymmetric: the left side accepts JSON-convertible scalar values,
+while the right side accepts only JSON or text JSON documents.
 
 The right-side type predicate uses both the string OID and its static charset.
 This prevents a `VARCHAR` with binary charset from bypassing the same rejection
@@ -118,6 +119,14 @@ configuration, or persistent state is introduced by this operator.
 3. Add a new JSON membership comparator. This would duplicate the exact
    numeric/object/array comparison and prepared-array cost logic already used by
    `JSON_OVERLAPS`; reuse keeps the two direct-value contracts aligned.
+4. Adopt the jq-style architecture proposed in issue #23008. This is not
+   selected because jq would still need an adapter for direct-element equality,
+   SQL `NULL`/JSON `null`, temporal/YEAR, and binary-provenance domains; that
+   adapter would also repeat prepared-protocol conversion. The existing
+   vector/process path preserves current cancellation and nesting/evaluation
+   bounds and can reuse the bounded exact-array index, while an embedded jq
+   path would introduce a second execution boundary without improving the
+   contract or reusing that index.
 
 ## Performance and bounds
 
@@ -132,7 +141,7 @@ evaluated row and add no state beyond the current expression invocation.
 
 | Contract | White-box proof | Public SQL proof |
 |---|---|---|
-| text vs binary RHS domain | `TestJSONMemberOfRejectsBinaryRightDomains` | binary and varbinary casts return `ER_INVALID_JSON_CHARSET` (3144) |
+| text vs binary RHS domain | `TestJSONMemberOfRejectsInvalidRightDomainsAtExecution` | binary and varbinary casts return `ER_INVALID_JSON_CHARSET` (3144) |
 | SQL NULL vs JSON null | `TestJSONMemberOfScalarAndNullSemantics` | existing null cases in `func_json_member_of` BVT |
 | exact direct equality | JSON value/array/object unit tests | existing nested-array/object BVT cases |
 | YEAR numeric domain | `TestJSONMemberOfYearUsesNumericJSONDomain` and prepared YEAR test | numeric and quoted YEAR BVT cases |

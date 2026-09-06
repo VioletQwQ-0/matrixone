@@ -152,6 +152,27 @@ func TestJSONMemberOfPreparedBinaryStringKeepsOpaqueDomain(t *testing.T) {
 	require.True(t, succeed, message)
 }
 
+func TestJSONMemberOfStaticBinaryLeftKeepsOpaqueDomain(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	raw := string([]byte{0, 1, 2})
+	array, err := bytejson.CreateByteJSON([]any{newTypedByteJson(bytejson.TpCodeOpaque, raw)})
+	require.NoError(t, err)
+	encoded, err := array.Marshal()
+	require.NoError(t, err)
+
+	testCase := NewFunctionTestCase(
+		proc,
+		[]FunctionTestInput{
+			NewFunctionTestInput(types.T_binary.ToType(), []string{raw}, nil),
+			NewFunctionTestConstInput(types.T_json.ToType(), []string{string(encoded)}, nil),
+		},
+		NewFunctionTestResult(types.T_int64.ToType(), false, []int64{1}, nil),
+		jsonMemberOf,
+	)
+	succeed, message := testCase.Run()
+	require.True(t, succeed, message)
+}
+
 func TestJSONMemberOfJSONValuesAndNonArrayRHS(t *testing.T) {
 	runJSONMemberOfCase(t,
 		[]FunctionTestInput{
@@ -225,32 +246,141 @@ func TestJSONMemberOfLargeConstantArrayUsesExactComparator(t *testing.T) {
 		NewFunctionTestResult(types.T_int64.ToType(), false, []int64{1, 1, 0, 1}, nil))
 }
 
+func TestJSONMemberOfNullLeftSkipsRightValidation(t *testing.T) {
+	binaryCharset := types.NewWithCharset(types.T_varchar, 32, 0, types.CharsetBinary)
+	tests := []struct {
+		name  string
+		right FunctionTestInput
+	}{
+		{
+			name:  "numeric",
+			right: NewFunctionTestInput(types.T_int64.ToType(), []int64{1, 1, 1}, nil),
+		},
+		{
+			name:  "binary",
+			right: NewFunctionTestInput(types.T_binary.ToType(), []string{"[1]", "[1]", "[1]"}, nil),
+		},
+		{
+			name:  "malformed-json",
+			right: NewFunctionTestInput(types.T_varchar.ToType(), []string{"not-json", "not-json", "not-json"}, nil),
+		},
+		{
+			name:  "binary-charset",
+			right: NewFunctionTestInput(binaryCharset, []string{"[1]", "[1]", "[1]"}, nil),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			proc := testutil.NewProcess(t)
+			testCase := NewFunctionTestCase(
+				proc,
+				[]FunctionTestInput{
+					NewFunctionTestInput(types.T_int64.ToType(), []int64{0, 0, 0}, []bool{true, true, true}),
+					test.right,
+				},
+				NewFunctionTestResult(types.T_int64.ToType(), false, []int64{0, 0, 0}, []bool{true, true, true}),
+				jsonMemberOf,
+			)
+			succeed, message := testCase.Run()
+			require.True(t, succeed, message)
+		})
+	}
+
+	proc := testutil.NewProcess(t)
+	prepared := NewFunctionTestCase(
+		proc,
+		[]FunctionTestInput{
+			NewFunctionTestInput(types.T_int64.ToType(), []int64{0}, []bool{true}),
+			NewFunctionTestInput(types.T_text.ToType(), []string{"1"}, nil),
+		},
+		NewFunctionTestResult(types.T_int64.ToType(), false, []int64{0}, []bool{true}),
+		jsonMemberOf,
+	)
+	prepared.parameters[1].SetPrepareParamKind(vector.PrepareParamInteger)
+	prepared.parameters[1].SetPrepareParamType(types.T_int64)
+	succeed, message := prepared.Run()
+	require.True(t, succeed, message)
+}
+
 func TestJSONMemberOfFunctionRegistration(t *testing.T) {
 	ctx := context.Background()
 	result, err := GetFunctionByName(ctx, "member of", []types.Type{types.T_int64.ToType(), types.T_varchar.ToType()})
 	require.NoError(t, err)
 	require.Equal(t, types.T_int64, result.GetReturnType().Oid)
 
-	_, err = GetFunctionByName(ctx, "member of", []types.Type{types.T_int64.ToType(), types.T_bool.ToType()})
-	require.EqualError(t, err, "Invalid data type for JSON data in argument 2 to function member of; a JSON string or JSON type is required.")
+	result, err = GetFunctionByName(ctx, "member of", []types.Type{types.T_int64.ToType(), types.T_bool.ToType()})
+	require.NoError(t, err)
+	require.Equal(t, types.T_int64, result.GetReturnType().Oid)
 
 	_, err = GetFunctionByName(ctx, "member of", []types.Type{types.T_array_float32.ToType(), types.T_varchar.ToType()})
 	require.Error(t, err, "native SQL vectors must not be accepted as MEMBER OF left operands")
 }
 
-func TestJSONMemberOfRejectsBinaryRightDomains(t *testing.T) {
-	ctx := context.Background()
+func TestJSONMemberOfRejectsInvalidRightDomainsAtExecution(t *testing.T) {
 	want := "Cannot create a JSON value from a string with CHARACTER SET 'binary'."
 	for _, oid := range []types.T{types.T_binary, types.T_varbinary, types.T_blob} {
-		_, err := GetFunctionByName(ctx, "member of", []types.Type{types.T_int64.ToType(), oid.ToType()})
+		testCase := NewFunctionTestCase(
+			testutil.NewProcess(t),
+			[]FunctionTestInput{
+				NewFunctionTestInput(types.T_int64.ToType(), []int64{1}, nil),
+				NewFunctionTestInput(oid.ToType(), []string{"[1]"}, nil),
+			},
+			NewFunctionTestResult(types.T_int64.ToType(), false, nil, nil),
+			jsonMemberOf,
+		)
+		require.NoError(t, testCase.result.PreExtendAndReset(1), oid.String())
+		err := testCase.fn(testCase.parameters, testCase.result, testCase.proc, 1, nil)
 		require.EqualError(t, err, want, oid.String())
 		require.Equal(t, uint16(moerr.ER_INVALID_JSON_CHARSET), err.(*moerr.Error).MySQLCode(), oid.String())
 	}
 
 	binaryCharset := types.NewWithCharset(types.T_varchar, 32, 0, types.CharsetBinary)
-	_, err := GetFunctionByName(ctx, "member of", []types.Type{types.T_int64.ToType(), binaryCharset})
+	testCase := NewFunctionTestCase(
+		testutil.NewProcess(t),
+		[]FunctionTestInput{
+			NewFunctionTestInput(types.T_int64.ToType(), []int64{1}, nil),
+			NewFunctionTestInput(binaryCharset, []string{"[1]"}, nil),
+		},
+		NewFunctionTestResult(types.T_int64.ToType(), false, nil, nil),
+		jsonMemberOf,
+	)
+	require.NoError(t, testCase.result.PreExtendAndReset(1))
+	err := testCase.fn(testCase.parameters, testCase.result, testCase.proc, 1, nil)
 	require.EqualError(t, err, want)
 	require.Equal(t, uint16(moerr.ER_INVALID_JSON_CHARSET), err.(*moerr.Error).MySQLCode())
+}
+
+func TestJSONMemberOfRejectsUnsupportedRightDomainAtExecution(t *testing.T) {
+	testCase := NewFunctionTestCase(
+		testutil.NewProcess(t),
+		[]FunctionTestInput{
+			NewFunctionTestInput(types.T_int64.ToType(), []int64{1}, nil),
+			NewFunctionTestInput(types.T_bool.ToType(), []bool{true}, nil),
+		},
+		NewFunctionTestResult(types.T_int64.ToType(), false, nil, nil),
+		jsonMemberOf,
+	)
+	require.NoError(t, testCase.result.PreExtendAndReset(1))
+	err := testCase.fn(testCase.parameters, testCase.result, testCase.proc, 1, nil)
+	require.EqualError(t, err,
+		"Invalid data type for JSON data in argument 2 to function member of; a JSON string or JSON type is required.")
+}
+
+func TestJSONMemberOfCountEvaluableRows(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	testCase := NewFunctionTestCase(
+		proc,
+		[]FunctionTestInput{
+			NewFunctionTestInput(types.T_int64.ToType(), []int64{1, 0, 2, 0}, []bool{false, true, false, true}),
+			NewFunctionTestConstInput(types.T_varchar.ToType(), []string{"[1]"}, nil),
+		},
+		NewFunctionTestResult(types.T_int64.ToType(), false, nil, nil),
+		jsonMemberOf,
+	)
+	require.Equal(t, 2, jsonMemberOfCountEvaluableRows(testCase.parameters[0], 4, nil))
+	require.False(t, jsonOverlapShouldPrepareScalar(512, 2))
+	require.True(t, jsonOverlapShouldPrepareScalar(512, 20))
 }
 
 func TestJSONMemberOfRejectsBinaryRightRuntimeProvenance(t *testing.T) {
