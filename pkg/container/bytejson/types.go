@@ -304,6 +304,7 @@ func byteJsonTypeRankTrusted(value ByteJson) jsonTypeRank {
 		return jsonRankDatetime
 	case TpCodeBlob, TpCodeOpaque, TpCodeBit:
 		binaryValue, _ := binaryJSONValue(value)
+		binaryValue = resolveBinaryJSONValue(binaryValue)
 		if binaryValue.subtype == binaryJSONBit {
 			return jsonRankBit
 		}
@@ -348,6 +349,7 @@ func byteJsonTypeRank(value ByteJson) (jsonTypeRank, bool) {
 		if !ok {
 			return jsonRankUnknown, false
 		}
+		binaryValue = resolveBinaryJSONValue(binaryValue)
 		if binaryValue.subtype == binaryJSONBit {
 			return jsonRankBit, true
 		}
