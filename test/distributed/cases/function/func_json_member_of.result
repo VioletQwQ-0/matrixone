@@ -43,9 +43,9 @@ select cast('2024' as year) member of ('[2024]'), cast('2024' as year) member of
 ➤ cast(2024 as year) member of ([2024])[-5,64,0]  ¦  cast(2024 as year) member of (["2024"])[-5,64,0]  𝄀
 1  ¦  0
 select 1 member of (cast('[1]' as binary));
-Cannot create a JSON value from a string with CHARACTER SET 'binary'.
+Data truncation: Cannot create a JSON value from a string with CHARACTER SET 'binary'.
 select 1 member of (cast('[1]' as varbinary));
-Cannot create a JSON value from a string with CHARACTER SET 'binary'.
+Data truncation: Cannot create a JSON value from a string with CHARACTER SET 'binary'.
 select 1 member ('[1]'), 1 member of ('[2]');
 ➤ 1 member of ([1])[-5,64,0]  ¦  1 member of ([2])[-5,64,0]  𝄀
 1  ¦  0
