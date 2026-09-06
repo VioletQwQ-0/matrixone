@@ -482,10 +482,10 @@ func TestJsonSchemaMySQLDraft4Dialect(t *testing.T) {
 		tc := tcTemp{
 			info: "json_schema_valid MySQL Draft 4 JSON inputs",
 			inputs: []FunctionTestInput{
-				NewFunctionTestInput(types.T_json.ToType(), []string{mustJsonBinaryString(t, `{"format":"email"}`)}, []bool{false}),
-				NewFunctionTestInput(types.T_json.ToType(), []string{mustJsonBinaryString(t, `"not-an-email"`)}, []bool{false}),
+				NewFunctionTestInput(types.T_json.ToType(), []string{mustJsonBinaryString(t, `{"format":"email"}`), mustJsonBinaryString(t, `{"minimum":5,"exclusiveMinimum":"5"}`)}, []bool{false, false}),
+				NewFunctionTestInput(types.T_json.ToType(), []string{mustJsonBinaryString(t, `"not-an-email"`), mustJsonBinaryString(t, `5`)}, []bool{false, false}),
 			},
-			expect: NewFunctionTestResult(types.T_bool.ToType(), false, []bool{true}, []bool{false}),
+			expect: NewFunctionTestResult(types.T_bool.ToType(), false, []bool{true, true}, []bool{false, false}),
 		}
 		fcTC := NewFunctionTestCase(proc, tc.inputs, tc.expect, JsonSchemaValid)
 		s, info := fcTC.Run()
@@ -496,9 +496,13 @@ func TestJsonSchemaMySQLDraft4Dialect(t *testing.T) {
 func TestNormalizeMySQLDraft4SchemaPositions(t *testing.T) {
 	decoder := json.NewDecoder(strings.NewReader(`{
 		"format":"email",
+		"$ref":1,
 		"exclusiveMinimum":5,
-		"properties":{"format":{"type":"string"}},
-		"enum":[{"format":"email","exclusiveMinimum":5}],
+		"properties":{"format":{"type":"string"},"ref":{"$ref":false}},
+		"additionalProperties":{"minimum":5,"exclusiveMinimum":"5"},
+		"not":{"exclusiveMaximum":true},
+		"dependencies":{"a":{"maximum":5,"exclusiveMaximum":false}},
+		"enum":[{"$ref":1,"format":"email","exclusiveMinimum":5}],
 		"default":{"format":"email","exclusiveMinimum":5},
 		"const":{"format":"email","exclusiveMinimum":5},
 		"unknown":{"format":"email","exclusiveMinimum":5}
@@ -509,9 +513,14 @@ func TestNormalizeMySQLDraft4SchemaPositions(t *testing.T) {
 
 	normalizeMySQLDraft4Schema(schema)
 	root := schema.(map[string]any)
+	require.NotContains(t, root, "$ref")
 	require.NotContains(t, root, "format")
 	require.NotContains(t, root, "exclusiveMinimum")
 	require.Contains(t, root["properties"].(map[string]any), "format")
+	require.NotContains(t, root["properties"].(map[string]any)["ref"], "$ref")
+	require.NotContains(t, root["additionalProperties"], "exclusiveMinimum")
+	require.NotContains(t, root["not"], "exclusiveMaximum")
+	require.Equal(t, false, root["dependencies"].(map[string]any)["a"].(map[string]any)["exclusiveMaximum"])
 
 	for _, literal := range []any{
 		root["enum"].([]any)[0],
@@ -523,6 +532,8 @@ func TestNormalizeMySQLDraft4SchemaPositions(t *testing.T) {
 		require.Equal(t, "email", obj["format"])
 		require.Equal(t, json.Number("5"), obj["exclusiveMinimum"])
 	}
+	literal := root["enum"].([]any)[0].(map[string]any)
+	require.Equal(t, json.Number("1"), literal["$ref"])
 }
 
 func TestJsonSchemaMixedOverloads(t *testing.T) {
@@ -711,23 +722,119 @@ func TestJsonSchemaRefKeywordDetection(t *testing.T) {
 		require.True(t, s, info)
 	})
 
-	t.Run("non-string ref at schema position is rejected", func(t *testing.T) {
-		tc := tcTemp{
-			info: "json_schema_valid non-string schema ref",
-			inputs: []FunctionTestInput{
-				NewFunctionTestInput(types.T_varchar.ToType(),
-					[]string{`{"properties":{"a":{"$ref":1}}}`},
-					[]bool{false}),
-				NewFunctionTestInput(types.T_varchar.ToType(),
-					[]string{`{"a":1}`},
-					[]bool{false}),
-			},
-			expect: NewFunctionTestResult(types.T_bool.ToType(), true, []bool{false}, []bool{false}),
+}
+
+func TestJsonSchemaNonStringRefsAtSchemaPositions(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	functions := []struct {
+		name    string
+		retType types.Type
+		fn      fEvalFn
+	}{
+		{name: "json_schema_valid", retType: types.T_bool.ToType(), fn: JsonSchemaValid},
+		{name: "json_schema_validation_report", retType: types.T_json.ToType(), fn: JsonSchemaValidationReport},
+	}
+	cases := []struct {
+		name     string
+		schema   string
+		document string
+	}{
+		{name: "root numeric", schema: `{"$ref":1}`, document: `1`},
+		{name: "items boolean", schema: `{"items":{"$ref":false}}`, document: `[1]`},
+		{name: "allOf null", schema: `{"allOf":[{"$ref":null}]}`, document: `1`},
+		{name: "anyOf numeric", schema: `{"anyOf":[{"type":"number","$ref":1}]}`, document: `1`},
+		{name: "oneOf boolean", schema: `{"oneOf":[{"type":"number","$ref":false}]}`, document: `1`},
+		{name: "definitions numeric", schema: `{"definitions":{"a":{"$ref":1}}}`, document: `1`},
+		{name: "pattern properties null", schema: `{"patternProperties":{".*":{"type":"number","$ref":null}}}`, document: `{"a":1}`},
+		{name: "properties boolean", schema: `{"properties":{"a":{"$ref":false}}}`, document: `{"a":1}`},
+		{name: "dependencies null", schema: `{"dependencies":{"a":{"$ref":null}}}`, document: `{"a":1}`},
+		{name: "additional properties numeric", schema: `{"additionalProperties":{"$ref":1}}`, document: `{"a":1}`},
+		{name: "additional items null", schema: `{"items":[{"type":"number"}],"additionalItems":{"$ref":null}}`, document: `[1,"extra"]`},
+		{name: "not boolean", schema: `{"not":{"type":"string","$ref":false}}`, document: `1`},
+	}
+
+	for _, function := range functions {
+		for _, schemaCase := range cases {
+			for _, constant := range []bool{false, true} {
+				function := function
+				schemaCase := schemaCase
+				constant := constant
+				name := fmt.Sprintf("%s/%s/constant=%t", function.name, schemaCase.name, constant)
+				t.Run(name, func(t *testing.T) {
+					schemaInput := NewFunctionTestInput(types.T_varchar.ToType(), []string{schemaCase.schema}, []bool{false})
+					if constant {
+						schemaInput = NewFunctionTestConstInput(types.T_varchar.ToType(), []string{schemaCase.schema}, []bool{false})
+					}
+					documentInput := NewFunctionTestInput(types.T_varchar.ToType(), []string{schemaCase.document}, []bool{false})
+					var expect FunctionTestResult
+					if function.name == "json_schema_valid" {
+						expect = NewFunctionTestResult(function.retType, false, []bool{true}, []bool{false})
+					} else {
+						expect = NewFunctionTestResult(function.retType, false, []string{mustJsonBinaryString(t, `{"valid":true}`)}, []bool{false})
+					}
+					tc := NewFunctionTestCase(proc, []FunctionTestInput{schemaInput, documentInput}, expect, function.fn)
+					s, info := tc.Run()
+					require.True(t, s, info)
+				})
+			}
 		}
-		fcTC := NewFunctionTestCase(proc, tc.inputs, tc.expect, JsonSchemaValid)
-		s, info := fcTC.Run()
-		require.True(t, s, info)
-	})
+	}
+}
+
+func TestJsonSchemaMySQLIgnoredInvalidExclusiveBounds(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	functions := []struct {
+		name    string
+		retType types.Type
+		fn      fEvalFn
+	}{
+		{name: "json_schema_valid", retType: types.T_bool.ToType(), fn: JsonSchemaValid},
+		{name: "json_schema_validation_report", retType: types.T_json.ToType(), fn: JsonSchemaValidationReport},
+	}
+	cases := []struct {
+		name     string
+		schema   string
+		document string
+		valid    bool
+		report   string
+	}{
+		{name: "minimum string is ignored", schema: `{"minimum":5,"exclusiveMinimum":"5"}`, document: `5`, valid: true},
+		{name: "minimum null is ignored", schema: `{"minimum":5,"exclusiveMinimum":null}`, document: `5`, valid: true},
+		{name: "minimum boolean without pair is ignored", schema: `{"exclusiveMinimum":true}`, document: `5`, valid: true},
+		{name: "maximum string is ignored", schema: `{"maximum":5,"exclusiveMaximum":"5"}`, document: `5`, valid: true},
+		{name: "maximum null is ignored", schema: `{"maximum":5,"exclusiveMaximum":null}`, document: `5`, valid: true},
+		{name: "maximum boolean without pair is ignored", schema: `{"exclusiveMaximum":true}`, document: `5`, valid: true},
+		{name: "minimum boolean with pair remains exclusive", schema: `{"minimum":5,"exclusiveMinimum":true}`, document: `5`, valid: false, report: `{"document-location":"$","reason":"Must be greater than 5","schema-failed-keyword":"number_gt","schema-location":"#/number_gt","valid":false}`},
+		{name: "maximum boolean with pair remains exclusive", schema: `{"maximum":5,"exclusiveMaximum":true}`, document: `5`, valid: false, report: `{"document-location":"$","reason":"Must be less than 5","schema-failed-keyword":"number_lt","schema-location":"#/number_lt","valid":false}`},
+	}
+
+	for _, function := range functions {
+		for _, schemaCase := range cases {
+			for _, constant := range []bool{false, true} {
+				name := fmt.Sprintf("%s/%s/constant=%t", function.name, schemaCase.name, constant)
+				t.Run(name, func(t *testing.T) {
+					schemaInput := NewFunctionTestInput(types.T_varchar.ToType(), []string{schemaCase.schema}, []bool{false})
+					if constant {
+						schemaInput = NewFunctionTestConstInput(types.T_varchar.ToType(), []string{schemaCase.schema}, []bool{false})
+					}
+					documentInput := NewFunctionTestInput(types.T_varchar.ToType(), []string{schemaCase.document}, []bool{false})
+					var expect FunctionTestResult
+					if function.name == "json_schema_valid" {
+						expect = NewFunctionTestResult(function.retType, false, []bool{schemaCase.valid}, []bool{false})
+					} else {
+						report := schemaCase.report
+						if report == "" {
+							report = `{"valid":true}`
+						}
+						expect = NewFunctionTestResult(function.retType, false, []string{mustJsonBinaryString(t, report)}, []bool{false})
+					}
+					tc := NewFunctionTestCase(proc, []FunctionTestInput{schemaInput, documentInput}, expect, function.fn)
+					s, info := tc.Run()
+					require.True(t, s, info)
+				})
+			}
+		}
+	}
 }
 
 func TestJsonSchemaStringRefDetection(t *testing.T) {

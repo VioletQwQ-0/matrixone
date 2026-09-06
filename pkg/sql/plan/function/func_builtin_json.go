@@ -3054,9 +3054,6 @@ func compileMySQLDraft4Schema(ctx context.Context, fnName string, schemaBJ bytej
 		return nil, moerr.NewNotSupportedf(ctx, "%s: $ref is not supported", fnName)
 	}
 	normalizeMySQLDraft4Schema(schema)
-	if mysqlDraft4SchemaHasRef(schema) {
-		return nil, moerr.NewNotSupportedf(ctx, "%s: $ref is not supported", fnName)
-	}
 	schemaJSON, err = json.Marshal(schema)
 	if err != nil {
 		return nil, moerr.NewInvalidArg(ctx, fnName, err.Error())
@@ -3100,15 +3097,16 @@ func normalizeMySQLDraft4Schema(schema any) {
 		return
 	}
 
-	// MySQL's Draft 4 implementation treats format as an annotation.
-	delete(obj, "format")
-	for _, key := range []string{"exclusiveMinimum", "exclusiveMaximum"} {
-		if _, ok := obj[key].(json.Number); ok {
-			// Numeric exclusive bounds were introduced after Draft 4 and are
-			// ignored by MySQL instead of being rejected as malformed Draft 4.
-			delete(obj, key)
+	if ref, ok := obj["$ref"]; ok {
+		if _, ok := ref.(string); !ok {
+			delete(obj, "$ref")
 		}
 	}
+
+	// MySQL's Draft 4 implementation treats format as an annotation.
+	delete(obj, "format")
+	normalizeMySQLDraft4ExclusiveBound(obj, "exclusiveMinimum", "minimum")
+	normalizeMySQLDraft4ExclusiveBound(obj, "exclusiveMaximum", "maximum")
 
 	for _, key := range []string{"properties", "patternProperties", "definitions"} {
 		normalizeMySQLDraft4NamedSchemas(obj[key])
@@ -3146,63 +3144,21 @@ func normalizeMySQLDraft4SchemaOrArray(value any) {
 	normalizeMySQLDraft4Schema(value)
 }
 
-func mysqlDraft4SchemaHasRef(schema any) bool {
-	obj, ok := schema.(map[string]any)
+func normalizeMySQLDraft4ExclusiveBound(obj map[string]any, exclusiveKey, boundKey string) {
+	value, ok := obj[exclusiveKey]
 	if !ok {
-		return false
+		return
 	}
-	if _, ok := obj["$ref"]; ok {
-		return true
+	if _, ok := value.(bool); !ok {
+		// Numeric exclusive bounds belong to later drafts. Other invalid values
+		// are ignored by MySQL instead of being rejected by the Draft 4 loader.
+		delete(obj, exclusiveKey)
+		return
 	}
-
-	for _, key := range []string{"properties", "patternProperties", "definitions"} {
-		if mysqlDraft4NamedSchemasHaveRef(obj[key]) {
-			return true
-		}
+	if _, ok := obj[boundKey].(json.Number); !ok {
+		// Draft 4 only gives the boolean form meaning when its bound is valid.
+		delete(obj, exclusiveKey)
 	}
-	if dependencies, ok := obj["dependencies"].(map[string]any); ok {
-		for _, dependency := range dependencies {
-			if mysqlDraft4SchemaHasRef(dependency) {
-				return true
-			}
-		}
-	}
-	for _, key := range []string{"additionalItems", "additionalProperties", "not"} {
-		if mysqlDraft4SchemaHasRef(obj[key]) {
-			return true
-		}
-	}
-	for _, key := range []string{"allOf", "anyOf", "oneOf", "items"} {
-		if mysqlDraft4SchemaOrArrayHasRef(obj[key]) {
-			return true
-		}
-	}
-	return false
-}
-
-func mysqlDraft4NamedSchemasHaveRef(value any) bool {
-	named, ok := value.(map[string]any)
-	if !ok {
-		return false
-	}
-	for _, schema := range named {
-		if mysqlDraft4SchemaHasRef(schema) {
-			return true
-		}
-	}
-	return false
-}
-
-func mysqlDraft4SchemaOrArrayHasRef(value any) bool {
-	if schemas, ok := value.([]any); ok {
-		for _, schema := range schemas {
-			if mysqlDraft4SchemaHasRef(schema) {
-				return true
-			}
-		}
-		return false
-	}
-	return mysqlDraft4SchemaHasRef(value)
 }
 
 func hasEvaluableJsonSchemaDoc(p vector.FunctionParameterWrapper[types.Varlena], length int, selectList *FunctionSelectList) bool {
