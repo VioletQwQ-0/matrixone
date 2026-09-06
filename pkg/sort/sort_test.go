@@ -281,6 +281,24 @@ func TestSortJSONUsesSeparatePhysicalAndSQLOrder(t *testing.T) {
 	}
 }
 
+func TestSortByVectorsJSONNumericPeersUseSecondaryKey(t *testing.T) {
+	mp := mpool.MustNewZero()
+	first := vector.NewVec(types.T_json.ToType())
+	second := vector.NewVec(types.T_int64.ToType())
+	defer first.Free(mp)
+	defer second.Free(mp)
+
+	for _, value := range []string{"1", "1.0", "2"} {
+		appendJSON(t, first, mp, value)
+	}
+	require.NoError(t, vector.AppendFixedList(second, []int64{2, 1, 0}, nil, mp))
+
+	selectors := []int64{0, 1, 2}
+	SortByVectors(selectors, []*vector.Vector{first, second},
+		[]bool{false, false}, []bool{false, false})
+	require.Equal(t, []int64{1, 0, 2}, selectors)
+}
+
 func TestSortByVectorsWithScratchMatchesConveniencePath(t *testing.T) {
 	mp := mpool.MustNewZero()
 	first := vector.NewVec(types.T_int64.ToType())

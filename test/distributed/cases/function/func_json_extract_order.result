@@ -340,5 +340,17 @@ rank_no    label
 2    number
 1    json-null
 0    sql-null
+drop table if exists json_order_peers;
+create table json_order_peers(tie_no int, j json);
+insert into json_order_peers values
+(2, convert('1', json)),
+(1, convert('1.0', json)),
+(0, convert('2', json));
+select tie_no from json_order_peers order by j asc, tie_no asc;
+tie_no
+1
+2
+0
 drop table json_order_values;
+drop table json_order_peers;
 drop database if exists test;

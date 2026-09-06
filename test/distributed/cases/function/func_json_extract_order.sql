@@ -117,6 +117,15 @@ select sum(case when (a.j < b.j) = (a.rank_no < b.rank_no) then 0 else 1 end) as
 -- a nonscalar sequence an ORDER BY compatibility contract.
 select rank_no, label from json_order_values where rank_no not in (4, 5) order by j asc, rank_no asc;
 select rank_no, label from json_order_values where rank_no not in (4, 5) order by j desc, rank_no desc;
+
+drop table if exists json_order_peers;
+create table json_order_peers(tie_no int, j json);
+insert into json_order_peers values
+  (2, convert('1', json)),
+  (1, convert('1.0', json)),
+  (0, convert('2', json));
+select tie_no from json_order_peers order by j asc, tie_no asc;
 drop table json_order_values;
+drop table json_order_peers;
 
 drop database if exists test;
