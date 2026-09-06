@@ -391,10 +391,43 @@ func sortByVector(desc, nullsLast, hasNull bool, os []int64, vec *vector.Vector,
 			data []types.Varlena
 			area []byte
 		}{data: data, area: area}
+		if !sqlOrder {
+			// JSON cluster keys are persisted and merged in their serialized
+			// byte order. Changing this to the SQL relation would make old and
+			// newly written objects incompatible during physical merge.
+			if !desc {
+				genericSort(col, os, varlenaLess)
+			} else {
+				genericSort(col, os, varlenaGreater)
+			}
+			break
+		}
+		if len(os) <= 1 {
+			break
+		}
+		values := prepareJSONOrderValues(os, data, area)
+		compare := func(i, j int64) int {
+			left := values[i]
+			right := values[j]
+			if left.valid && right.valid {
+				return bytejson.CompareByteJsonTrusted(left.value, right.value)
+			}
+			return bytejson.CompareByteJson(left.value, right.value)
+		}
 		if !desc {
-			genericSort(col, os, jsonLess)
+			genericSort(col, os, func(_ struct {
+				data []types.Varlena
+				area []byte
+			}, i, j int64) bool {
+				return compare(i, j) < 0
+			})
 		} else {
-			genericSort(col, os, jsonGreater)
+			genericSort(col, os, func(_ struct {
+				data []types.Varlena
+				area []byte
+			}, i, j int64) bool {
+				return compare(i, j) > 0
+			})
 		}
 	}
 }
@@ -590,31 +623,29 @@ func varlenaLess(vs struct {
 	return vs.data[i].UnsafeGetString(vs.area) < vs.data[j].UnsafeGetString(vs.area)
 }
 
-func jsonLess(vs struct {
-	data []types.Varlena
-	area []byte
-}, i, j int64) bool {
-	left := types.DecodeJson(vs.data[i].GetByteSlice(vs.area))
-	right := types.DecodeJson(vs.data[j].GetByteSlice(vs.area))
-
-	cmp := bytejson.CompareByteJson(left, right)
-	if cmp != 0 {
-		return cmp < 0
-	}
-	return false
+type jsonOrderValue struct {
+	value    bytejson.ByteJson
+	valid    bool
+	prepared bool
 }
 
-func jsonGreater(vs struct {
-	data []types.Varlena
-	area []byte
-}, i, j int64) bool {
-	left := types.DecodeJson(vs.data[i].GetByteSlice(vs.area))
-	right := types.DecodeJson(vs.data[j].GetByteSlice(vs.area))
-	cmp := bytejson.CompareByteJson(left, right)
-	if cmp != 0 {
-		return cmp > 0
+func prepareJSONOrderValues(
+	os []int64, data []types.Varlena, area []byte,
+) []jsonOrderValue {
+	values := make([]jsonOrderValue, len(data))
+	for _, selector := range os {
+		index := int(selector)
+		if values[index].prepared {
+			continue
+		}
+		value := types.DecodeJson(data[index].GetByteSlice(area))
+		values[index] = jsonOrderValue{
+			value:    value,
+			valid:    bytejson.IsValidByteJson(value),
+			prepared: true,
+		}
 	}
-	return false
+	return values
 }
 
 func varlenaGreater(vs struct {

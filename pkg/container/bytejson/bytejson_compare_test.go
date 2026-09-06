@@ -105,6 +105,33 @@ func TestCompareByteJsonMySQLTypePrecedence(t *testing.T) {
 	require.Greater(t, CompareByteJson(legacyBlob, values[10].value), 0)
 }
 
+func TestCompareByteJsonTrustedMatchesValidatedComparison(t *testing.T) {
+	values := []ByteJson{
+		makeJson(t, "null"),
+		makeJson(t, "1"),
+		makeJson(t, `"x"`),
+		makeJson(t, `{"a":[false,{"b":2}]}`),
+		makeJson(t, `[true,{"b":3}]`),
+		makeJson(t, "false"),
+		makeJson(t, "true"),
+		makeBinaryJson(TpCodeDate, []byte("2024-01-01")),
+		makeBinaryJson(TpCodeBit, []byte{0x01}),
+		makeBinaryJson(TpCodeOpaque, []byte{0x01}),
+	}
+
+	for i := range values {
+		require.True(t, IsValidByteJson(values[i]))
+		for j := range values {
+			require.Equal(t,
+				compareSign(CompareByteJson(values[i], values[j])),
+				compareSign(CompareByteJsonTrusted(values[i], values[j])),
+				"trusted comparison differs for indexes %d and %d", i, j)
+		}
+	}
+
+	require.False(t, IsValidByteJson(ByteJson{Type: TpCodeArray, Data: []byte{0x01}}))
+}
+
 func TestCompareByteJsonUnknownTypeHasDeterministicFallback(t *testing.T) {
 	left := ByteJson{Type: 0xfd, Data: []byte{0x01}}
 	right := ByteJson{Type: 0xfd, Data: []byte{0x02}}

@@ -18,9 +18,12 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
+	"github.com/matrixorigin/matrixone/pkg/container/bytejson"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/testutil"
@@ -247,6 +250,37 @@ func TestSortForSQLOrderFloat32NaNLast(t *testing.T) {
 	}
 }
 
+func TestSortJSONUsesSeparatePhysicalAndSQLOrder(t *testing.T) {
+	mp := mpool.MustNewZero()
+	vec := vector.NewVec(types.T_json.ToType())
+	defer vec.Free(mp)
+	for _, value := range []string{"0", "1", "false", "true"} {
+		appendJSON(t, vec, mp, value)
+	}
+
+	for _, test := range []struct {
+		name   string
+		sql    bool
+		desc   bool
+		wanted []int64
+	}{
+		{name: "physical ascending", wanted: []int64{3, 2, 0, 1}},
+		{name: "physical descending", desc: true, wanted: []int64{1, 0, 2, 3}},
+		{name: "SQL ascending", sql: true, wanted: []int64{0, 1, 2, 3}},
+		{name: "SQL descending", sql: true, desc: true, wanted: []int64{3, 2, 1, 0}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selectors := []int64{0, 1, 2, 3}
+			if test.sql {
+				SortForSQLOrder(test.desc, false, false, selectors, vec)
+			} else {
+				Sort(test.desc, false, false, selectors, vec)
+			}
+			require.Equal(t, test.wanted, selectors)
+		})
+	}
+}
+
 func TestSortByVectorsWithScratchMatchesConveniencePath(t *testing.T) {
 	mp := mpool.MustNewZero()
 	first := vector.NewVec(types.T_int64.ToType())
@@ -292,6 +326,44 @@ func BenchmarkSortIntVector(b *testing.B) {
 	}
 	for i := 0; i < b.N; i++ {
 		Sort(false, false, false, os, vec)
+	}
+}
+
+func BenchmarkSortForSQLOrderJSONWidePayload(b *testing.B) {
+	mp := mpool.MustNewZero()
+	vec := vector.NewVec(types.T_json.ToType())
+	defer vec.Free(mp)
+
+	const rows = 256
+	payload := strings.Repeat("x", 32<<10)
+	for i := 0; i < rows; i++ {
+		value := `{"k":` + strconv.Itoa(i) + `,"payload":"` + payload + `"}`
+		appendJSON(b, vec, mp, value)
+	}
+
+	selectors := make([]int64, rows)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for j := range selectors {
+			selectors[j] = int64(rows - j - 1)
+		}
+		SortForSQLOrder(false, false, false, selectors, vec)
+	}
+}
+
+func appendJSON(t testing.TB, vec *vector.Vector, mp *mpool.MPool, text string) {
+	t.Helper()
+	bj, err := bytejson.ParseFromString(text)
+	if err != nil {
+		t.Fatalf("parse JSON %q: %v", text, err)
+	}
+	encoded, err := bj.Marshal()
+	if err != nil {
+		t.Fatalf("marshal JSON %q: %v", text, err)
+	}
+	if err := vector.AppendBytes(vec, encoded, false, mp); err != nil {
+		t.Fatalf("append JSON %q: %v", text, err)
 	}
 }
 

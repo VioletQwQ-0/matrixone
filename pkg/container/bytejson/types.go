@@ -236,24 +236,80 @@ func CompareByteJson(left, right ByteJson) int {
 		return compareInt64(int64(leftRank), int64(rightRank))
 	}
 
+	return compareByteJsonKnown(left, right, leftRank)
+}
+
+// IsValidByteJson reports whether value has a complete, supported ByteJSON
+// representation, including every descendant of an array or object.
+func IsValidByteJson(value ByteJson) bool {
+	_, ok := byteJsonTypeRank(value)
+	return ok
+}
+
+// CompareByteJsonTrusted compares two values that have already passed
+// IsValidByteJson. It intentionally skips document validation so callers that
+// sort a batch can validate each row once and keep comparisons allocation-free.
+func CompareByteJsonTrusted(left, right ByteJson) int {
+	leftRank := byteJsonTypeRankTrusted(left)
+	rightRank := byteJsonTypeRankTrusted(right)
+	if leftRank != rightRank {
+		return compareInt64(int64(leftRank), int64(rightRank))
+	}
+	return compareByteJsonKnown(left, right, leftRank)
+}
+
+func compareByteJsonKnown(left, right ByteJson, rank jsonTypeRank) int {
 	var cmp int
-	switch leftRank {
+	switch rank {
 	case jsonRankNull:
 		return 0
 	case jsonRankNumber:
-		cmp, _ = CompareNumeric(left, right)
+		cmp = compareByteJsonNumeric(left, right)
 	case jsonRankBoolean:
 		return compareInt64(int64(booleanLiteralOrder(left.Data[0])), int64(booleanLiteralOrder(right.Data[0])))
 	case jsonRankString, jsonRankDate, jsonRankTime, jsonRankDatetime:
 		cmp = bytes.Compare(left.GetString(), right.GetString())
 	case jsonRankArray, jsonRankObject:
-		return compareByteJsonContainer(left, right, leftRank)
+		return compareByteJsonContainer(left, right, rank)
 	case jsonRankBit, jsonRankBlob:
 		cmp, _ = CompareBinaryJSON(left, right)
 	default:
 		return compareByteJsonFallback(left, right)
 	}
 	return cmp
+}
+
+func byteJsonTypeRankTrusted(value ByteJson) jsonTypeRank {
+	switch value.Type {
+	case TpCodeLiteral:
+		switch value.Data[0] {
+		case LiteralNull:
+			return jsonRankNull
+		case LiteralTrue, LiteralFalse:
+			return jsonRankBoolean
+		}
+	case TpCodeInt64, TpCodeUint64, TpCodeFloat64, TpCodeDecimal:
+		return jsonRankNumber
+	case TpCodeString:
+		return jsonRankString
+	case TpCodeObject:
+		return jsonRankObject
+	case TpCodeArray:
+		return jsonRankArray
+	case TpCodeDate:
+		return jsonRankDate
+	case TpCodeTime:
+		return jsonRankTime
+	case TpCodeDatetime:
+		return jsonRankDatetime
+	case TpCodeBlob, TpCodeOpaque, TpCodeBit:
+		binaryValue, _ := binaryJSONValue(value)
+		if binaryValue.subtype == binaryJSONBit {
+			return jsonRankBit
+		}
+		return jsonRankBlob
+	}
+	return jsonRankUnknown
 }
 
 func byteJsonTypeRank(value ByteJson) (jsonTypeRank, bool) {
@@ -318,7 +374,7 @@ func compareByteJsonContainer(left, right ByteJson, rank jsonTypeRank) (cmp int)
 	rightCnt := right.GetElemCnt()
 	if rank == jsonRankArray {
 		for i := 0; i < leftCnt && i < rightCnt; i++ {
-			cmp = CompareByteJson(left.getArrayElem(i), right.getArrayElem(i))
+			cmp = CompareByteJsonTrusted(left.getArrayElem(i), right.getArrayElem(i))
 			if cmp != 0 {
 				return cmp
 			}
@@ -333,7 +389,7 @@ func compareByteJsonContainer(left, right ByteJson, rank jsonTypeRank) (cmp int)
 		if cmp = bytes.Compare(left.getObjectKey(i), right.getObjectKey(i)); cmp != 0 {
 			return cmp
 		}
-		if cmp = CompareByteJson(left.getObjectVal(i), right.getObjectVal(i)); cmp != 0 {
+		if cmp = CompareByteJsonTrusted(left.getObjectVal(i), right.getObjectVal(i)); cmp != 0 {
 			return cmp
 		}
 	}

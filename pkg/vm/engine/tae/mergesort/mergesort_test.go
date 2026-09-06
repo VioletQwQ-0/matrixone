@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
+	"github.com/matrixorigin/matrixone/pkg/container/bytejson"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine/tae/common"
@@ -102,6 +103,54 @@ func TestSortBlockColumns(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []int64{1, 0, 2}, columns)
 	require.Equal(t, []int32{0, 1, 3}, vector.MustFixedColWithTypeCheck[int32](vecWithNull.GetDownstreamVector()))
+}
+
+func TestJSONClusterKeyPreservesPhysicalOrderThroughWriteAndMerge(t *testing.T) {
+	defer testutils.AfterTest(t)()
+	pool := mocks.GetTestVectorPool()
+	rawJSON := func(text string) []byte {
+		bj, err := bytejson.ParseFromString(text)
+		require.NoError(t, err)
+		encoded, err := bj.Marshal()
+		require.NoError(t, err)
+		return encoded
+	}
+
+	input := containers.MakeVector(types.T_json.ToType(), common.DefaultAllocator)
+	for _, value := range []string{"0", "1", "false", "true"} {
+		input.Append(rawJSON(value), false)
+	}
+	columns, err := SortBlockColumns([]containers.Vector{input}, 0, pool)
+	require.NoError(t, err)
+	require.Equal(t, []int64{3, 2, 0, 1}, columns)
+	require.Equal(t,
+		[][]byte{rawJSON("true"), rawJSON("false"), rawJSON("0"), rawJSON("1")},
+		vector.InefficientMustBytesCol(input.GetDownstreamVector()))
+	input.Close()
+
+	oldObject := containers.NewBatch()
+	oldVector := containers.MakeVector(types.T_json.ToType(), common.DefaultAllocator)
+	oldVector.Append(rawJSON("true"), false)
+	oldVector.Append(rawJSON("0"), false)
+	oldObject.AddVector("j", oldVector)
+
+	newObject := containers.NewBatch()
+	newVector := containers.MakeVector(types.T_json.ToType(), common.DefaultAllocator)
+	newVector.Append(rawJSON("false"), false)
+	newVector.Append(rawJSON("1"), false)
+	newObject.AddVector("j", newVector)
+	defer oldObject.Close()
+	defer newObject.Close()
+
+	mergerPool := &testPool{pool: pool}
+	merged, release, mapping, err := MergeAObj(
+		context.Background(), mergerPool, []*containers.Batch{oldObject, newObject}, 0, []uint32{4})
+	require.NoError(t, err)
+	defer release()
+	require.Equal(t, []int{0, 2, 1, 3}, mapping)
+	require.Equal(t,
+		[][]byte{rawJSON("true"), rawJSON("false"), rawJSON("0"), rawJSON("1")},
+		vector.InefficientMustBytesCol(merged[0].Vecs[0]))
 }
 
 func BenchmarkSortBlockColumns(b *testing.B) {

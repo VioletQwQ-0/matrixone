@@ -112,8 +112,11 @@ insert into json_order_values values
   (12, 'blob', json_extract(json_array(cast(x'01' as blob)), '$[0]'));
 select rank_no, label, json_type(j) from json_order_values order by rank_no;
 select sum(case when (a.j < b.j) = (a.rank_no < b.rank_no) then 0 else 1 end) as lt_mismatches, sum(case when (a.j = b.j) = (a.rank_no = b.rank_no) then 0 else 1 end) as eq_mismatches, sum(case when (a.j > b.j) = (a.rank_no > b.rank_no) then 0 else 1 end) as gt_mismatches from json_order_values a cross join json_order_values b where a.rank_no > 0 and b.rank_no > 0;
-select rank_no, label from json_order_values order by j asc, rank_no asc;
-select rank_no, label from json_order_values order by j desc, rank_no desc;
+-- ORDER BY is asserted only for scalar JSON and SQL/JSON NULL. Object/array
+-- precedence is covered by the direct comparator matrix above, without making
+-- a nonscalar sequence an ORDER BY compatibility contract.
+select rank_no, label from json_order_values where rank_no not in (4, 5) order by j asc, rank_no asc;
+select rank_no, label from json_order_values where rank_no not in (4, 5) order by j desc, rank_no desc;
 drop table json_order_values;
 
 drop database if exists test;

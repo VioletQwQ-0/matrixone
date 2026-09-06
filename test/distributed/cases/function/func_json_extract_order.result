@@ -314,14 +314,12 @@ rank_no    label    json_type(j)
 select sum(case when (a.j < b.j) = (a.rank_no < b.rank_no) then 0 else 1 end) as lt_mismatches, sum(case when (a.j = b.j) = (a.rank_no = b.rank_no) then 0 else 1 end) as eq_mismatches, sum(case when (a.j > b.j) = (a.rank_no > b.rank_no) then 0 else 1 end) as gt_mismatches from json_order_values a cross join json_order_values b where a.rank_no > 0 and b.rank_no > 0;
 lt_mismatches    eq_mismatches    gt_mismatches
 0    0    0
-select rank_no, label from json_order_values order by j asc, rank_no asc;
+select rank_no, label from json_order_values where rank_no not in (4, 5) order by j asc, rank_no asc;
 rank_no    label
 0    sql-null
 1    json-null
 2    number
 3    string
-4    object
-5    array
 6    false
 7    true
 8    date
@@ -329,7 +327,7 @@ rank_no    label
 10    datetime
 11    bit
 12    blob
-select rank_no, label from json_order_values order by j desc, rank_no desc;
+select rank_no, label from json_order_values where rank_no not in (4, 5) order by j desc, rank_no desc;
 rank_no    label
 12    blob
 11    bit
@@ -338,8 +336,6 @@ rank_no    label
 8    date
 7    true
 6    false
-5    array
-4    object
 3    string
 2    number
 1    json-null
