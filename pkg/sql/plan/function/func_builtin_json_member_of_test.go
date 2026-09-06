@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/container/bytejson"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -239,15 +240,17 @@ func TestJSONMemberOfFunctionRegistration(t *testing.T) {
 
 func TestJSONMemberOfRejectsBinaryRightDomains(t *testing.T) {
 	ctx := context.Background()
-	want := "Invalid data type for JSON data in argument 2 to function member of; a JSON string or JSON type is required."
+	want := "Cannot create a JSON value from a string with CHARACTER SET 'binary'."
 	for _, oid := range []types.T{types.T_binary, types.T_varbinary, types.T_blob} {
 		_, err := GetFunctionByName(ctx, "member of", []types.Type{types.T_int64.ToType(), oid.ToType()})
 		require.EqualError(t, err, want, oid.String())
+		require.Equal(t, uint16(moerr.ER_INVALID_JSON_CHARSET), err.(*moerr.Error).MySQLCode(), oid.String())
 	}
 
 	binaryCharset := types.NewWithCharset(types.T_varchar, 32, 0, types.CharsetBinary)
 	_, err := GetFunctionByName(ctx, "member of", []types.Type{types.T_int64.ToType(), binaryCharset})
 	require.EqualError(t, err, want)
+	require.Equal(t, uint16(moerr.ER_INVALID_JSON_CHARSET), err.(*moerr.Error).MySQLCode())
 }
 
 func TestJSONMemberOfRejectsBinaryRightRuntimeProvenance(t *testing.T) {
@@ -264,5 +267,6 @@ func TestJSONMemberOfRejectsBinaryRightRuntimeProvenance(t *testing.T) {
 	testCase.parameters[1].SetIsBinaryString(true)
 	require.NoError(t, testCase.result.PreExtendAndReset(1))
 	err := testCase.fn(testCase.parameters, testCase.result, proc, 1, nil)
-	require.EqualError(t, err, "Invalid data type for JSON data in argument 2 to function member of; a JSON string or JSON type is required.")
+	require.EqualError(t, err, "Cannot create a JSON value from a string with CHARACTER SET 'binary'.")
+	require.Equal(t, uint16(moerr.ER_INVALID_JSON_CHARSET), err.(*moerr.Error).MySQLCode())
 }

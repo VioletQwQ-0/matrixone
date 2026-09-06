@@ -41,8 +41,8 @@ MySQL 9.6 compatibility cases used for this PR's differential review:
   serialized as JSON arrays.
 - The right operand must be `JSON` or a text-domain `CHAR`, `VARCHAR`, or
   `TEXT` value. `BINARY`, `VARBINARY`, `BLOB`, and text-shaped values in the
-  binary charset are rejected with MySQL's invalid-JSON-argument error for
-  argument 2. Their bytes must never be parsed as JSON text.
+  binary charset are rejected with `ER_INVALID_JSON_CHARSET` (3144) and the
+  `binary` charset name. Their bytes must never be parsed as JSON text.
 - A text-domain right operand is parsed as one JSON document. Malformed JSON
   returns the existing invalid-JSON-document error, including for a non-array
   document. Nesting remains bounded by the existing JSON document depth limit.
@@ -98,11 +98,13 @@ before parsing, so a cached plan cannot turn binary bytes into a JSON document.
 
 ### Error and lifecycle behavior
 
-Static type failures use `ER_INVALID_TYPE_FOR_JSON` with argument 2. Runtime
-binary metadata uses the same error constructor; malformed text uses the
-existing `invalid JSON document` path. Constant decode errors are cached only
-for the current expression execution, and the existing vector/process reset
-clears prepared metadata between executions. No catalog, storage, wire-format,
+Unsupported non-binary static types use `ER_INVALID_TYPE_FOR_JSON` with
+argument 2. Binary RHS types and binary-charset text use
+`ER_INVALID_JSON_CHARSET` (3144) with charset `binary`; runtime binary
+metadata uses the same charset error. Malformed text uses the existing
+`invalid JSON document` path. Constant decode errors are cached only for the
+current expression execution, and the existing vector/process reset clears
+prepared metadata between executions. No catalog, storage, wire-format,
 configuration, or persistent state is introduced by this operator.
 
 ## Alternatives and trade-offs
@@ -130,7 +132,7 @@ evaluated row and add no state beyond the current expression invocation.
 
 | Contract | White-box proof | Public SQL proof |
 |---|---|---|
-| text vs binary RHS domain | `TestJSONMemberOfRejectsBinaryRightDomains` | binary and varbinary casts return `ER_INVALID_TYPE_FOR_JSON` |
+| text vs binary RHS domain | `TestJSONMemberOfRejectsBinaryRightDomains` | binary and varbinary casts return `ER_INVALID_JSON_CHARSET` (3144) |
 | SQL NULL vs JSON null | `TestJSONMemberOfScalarAndNullSemantics` | existing null cases in `func_json_member_of` BVT |
 | exact direct equality | JSON value/array/object unit tests | existing nested-array/object BVT cases |
 | YEAR numeric domain | `TestJSONMemberOfYearUsesNumericJSONDomain` and prepared YEAR test | numeric and quoted YEAR BVT cases |

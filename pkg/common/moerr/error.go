@@ -116,6 +116,7 @@ const (
 	// allocated separately for SELECT ... INTO statements returning multiple rows.
 	ErrTooManyRows            uint16 = 20328
 	ErrMultiUpdateKeyConflict uint16 = 20329
+	ErrInvalidJSONCharset     uint16 = 20330
 
 	// Group 4: unexpected state and io errors
 	ErrInvalidState                             uint16 = 20400
@@ -452,6 +453,7 @@ var errorMsgRefer = map[uint16]moErrorMsgItem{
 	ErrOperandColumns:       {ER_OPERAND_COLUMNS, []string{"21000"}, "Operand should contain %d column(s)"},
 	ErrSubqueryNo1Row:       {ER_SUBQUERY_NO_1_ROW, []string{"21000"}, "Subquery returns more than 1 row"},
 	ErrInvalidTypeForJSON:   {ER_UNKNOWN_ERROR, []string{MySQLDefaultSqlState}, "Invalid data type for JSON data in argument %d to function %s; a JSON string or JSON type is required."},
+	ErrInvalidJSONCharset:   {ER_INVALID_JSON_CHARSET, []string{"22032"}, "Cannot create a JSON value from a string with CHARACTER SET '%s'."},
 	ErrUnknownStmtHandler:   {ER_UNKNOWN_STMT_HANDLER, []string{MySQLDefaultSqlState}, "Unknown prepared statement handler (%s) given to %s"},
 	ErrViewWrongList:        {ER_VIEW_WRONG_LIST, []string{MySQLDefaultSqlState}, "In definition of view, derived table or common table expression, SELECT list and column names list have different column counts"},
 	ErrWrongArguments:       {ER_WRONG_ARGUMENTS, []string{MySQLDefaultSqlState}, "Incorrect arguments to %s"},
@@ -1132,6 +1134,10 @@ func NewInvalidGroupFuncUse(ctx context.Context) *Error {
 
 func NewInvalidTypeForJSON(ctx context.Context, argument int, function string) *Error {
 	return newError(ctx, ErrInvalidTypeForJSON, argument, function)
+}
+
+func NewInvalidJSONCharset(ctx context.Context, charset string) *Error {
+	return newError(ctx, ErrInvalidJSONCharset, charset)
 }
 
 func NewUnknownStmtHandler(ctx context.Context, name, operation string) *Error {

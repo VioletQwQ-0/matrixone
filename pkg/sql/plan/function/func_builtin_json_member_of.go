@@ -36,6 +36,17 @@ func jsonMemberOfLeftSupportsType(oid types.T) bool {
 	return jsonConstructorSupportsType(oid) && !oid.IsArrayRelate()
 }
 
+func jsonMemberOfRightHasBinaryDomain(typ types.Type) bool {
+	switch typ.Oid {
+	case types.T_binary, types.T_varbinary, types.T_blob:
+		return true
+	case types.T_char, types.T_varchar, types.T_text:
+		return types.StaticStringDomain(typ) == types.StringDomainBinary
+	default:
+		return false
+	}
+}
+
 // The right operand is a JSON document, not an arbitrary MySQL string.  In
 // particular, MySQL rejects BINARY/VARBINARY/BLOB and text values in the
 // binary charset before attempting to parse their bytes as JSON.
@@ -46,7 +57,7 @@ func jsonMemberOfRightSupportsType(typ types.Type) bool {
 	if typ.Oid != types.T_char && typ.Oid != types.T_varchar && typ.Oid != types.T_text {
 		return false
 	}
-	return types.StaticStringDomain(typ) == types.StringDomainText
+	return !jsonMemberOfRightHasBinaryDomain(typ)
 }
 
 func jsonMemberOfRightIsBinary(parameter *vector.Vector, row int) bool {
@@ -54,7 +65,7 @@ func jsonMemberOfRightIsBinary(parameter *vector.Vector, row int) bool {
 		return false
 	}
 	typ := *parameter.GetType()
-	if !jsonMemberOfRightSupportsType(typ) {
+	if jsonMemberOfRightHasBinaryDomain(typ) {
 		return true
 	}
 	preparedType := parameter.GetPrepareParamType()
@@ -65,10 +76,13 @@ func jsonMemberOfRightIsBinary(parameter *vector.Vector, row int) bool {
 	return parameter.GetIsBinaryStringAt(row)
 }
 
-func jsonMemberOfInvalidRightType(proc *process.Process) error {
+func jsonMemberOfInvalidRightType(proc *process.Process, binaryCharset bool) error {
 	ctx := context.Background()
 	if proc != nil && proc.Ctx != nil {
 		ctx = proc.Ctx
+	}
+	if binaryCharset {
+		return moerr.NewInvalidJSONCharset(ctx, "binary")
 	}
 	return moerr.NewInvalidTypeForJSON(ctx, 2, jsonMemberOfFunctionName)
 }
@@ -90,6 +104,9 @@ func jsonMemberOfCheckFn(_ []overload, inputs []types.Type) checkResult {
 		// parse for its value.
 		finalTypes[0] = types.T_varchar.ToType()
 		needsCast = true
+	}
+	if jsonMemberOfRightHasBinaryDomain(inputs[1]) {
+		return newCheckResultWithInvalidJSONCharset(2)
 	}
 	if !jsonMemberOfRightSupportsType(inputs[1]) {
 		return newCheckResultWithInvalidJSONArgument(2)
@@ -223,7 +240,7 @@ func jsonMemberOf(
 		}
 
 		if jsonMemberOfRightIsBinary(parameters[1], int(row)) {
-			return jsonMemberOfInvalidRightType(proc)
+			return jsonMemberOfInvalidRightType(proc, true)
 		}
 		rightDocument, rightNull, err := right.documentAt(row, proc)
 		if err != nil {
