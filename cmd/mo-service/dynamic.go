@@ -408,7 +408,7 @@ func startDynamicCNByIndex(index int) error {
 			Sys: &syscall.SysProcAttr{
 				Setsid: true,
 			},
-			Files: []uintptr{0, 1, 2}, // print message to the same pty
+			Files: []*os.File{os.Stdin, os.Stdout, os.Stderr}, // print message to the same pty
 		})
 	if err != nil {
 		return err
