@@ -3554,6 +3554,27 @@ var supportedStringBuiltIns = []FuncNew{
 		},
 	},
 
+	// Internal PAD SPACE weight expression.
+	{
+		functionId: INTERNAL_COLLATION_KEY,
+		class:      plan.Function_STRICT,
+		layout:     STANDARD_FUNCTION,
+		checkFn: func(_ []overload, inputs []types.Type) checkResult {
+			if len(inputs) == 2 && inputs[1].Oid == types.T_uint64 {
+				switch inputs[0].Oid {
+				case types.T_char, types.T_varchar, types.T_text, types.T_binary, types.T_varbinary, types.T_blob:
+					return newCheckResultWithSuccess(0)
+				}
+			}
+			return newCheckResultWithFailure(failedFunctionParametersWrong)
+		},
+		Overloads: []overload{{
+			overloadId: 0,
+			retType:    func(_ []types.Type) types.Type { return types.T_varbinary.ToType() },
+			newOp:      func() executeLogicOfOverload { return internalCollationKey },
+		}},
+	},
+
 	// function `serial`
 	{
 		functionId: SERIAL,

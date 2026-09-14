@@ -103,7 +103,8 @@ const (
 	MORPCVersion65     int64 = 65 // signed INT result contract for ASCII
 	MORPCVersion66     int64 = 66 // GROUP_CONCAT source-row diagnostics in aggregate partial state
 	MORPCVersion67     int64 = 67 // named process timezone identity
-	MORPCLatestVersion       = MORPCVersion67
+	MORPCVersion68     int64 = 68 // PAD SPACE v1 collation key expressions
+	MORPCLatestVersion       = MORPCVersion68
 )
 
 // DefaultLockWaitTimeoutSeconds is shared by the frontend default and by

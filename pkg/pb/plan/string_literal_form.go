@@ -185,6 +185,7 @@ const (
 	notEqualFunctionID               int32 = 1
 	nullSafeEqualFunctionID          int32 = 406
 	internalJSONComparisonFunctionID int32 = 577
+	internalCollationKeyFunctionID   int32 = 579
 	planBooleanTypeID                int32 = 10
 	planJSONTypeID                   int32 = 62
 	binFunctionID                    int32 = 270
@@ -201,6 +202,7 @@ const (
 // overload identities and their fixed-width execution contracts changed in
 // the same release. ASCIIInt32Result requires MORPC v65 because ASCII keeps
 // its overload IDs but changes its physical result vector from UINT8 to INT32.
+// CollationKeyV1 requires MORPC v68 for the new weight-expression function ID.
 // A struct makes compatibility call sites name every capability instead of
 // relying on positional booleans.
 type RemoteExpressionFeatures struct {
@@ -210,6 +212,7 @@ type RemoteExpressionFeatures struct {
 	FormatNumericArguments   bool
 	TypedConversionFunctions bool
 	ASCIIInt32Result         bool
+	CollationKeyV1           bool
 }
 
 func (features RemoteExpressionFeatures) Any() bool {
@@ -218,7 +221,8 @@ func (features RemoteExpressionFeatures) Any() bool {
 		features.MixedJSONBooleanEquality ||
 		features.FormatNumericArguments ||
 		features.TypedConversionFunctions ||
-		features.ASCIIInt32Result
+		features.ASCIIInt32Result ||
+		features.CollationKeyV1
 }
 
 // RequiredRemoteExpressionFeatures reports the independent versioned
@@ -229,6 +233,11 @@ func RequiredRemoteExpressionFeatures(owner any) (features RemoteExpressionFeatu
 	err = walkExpressionsInOwner(owner, func(expr *Expr) error {
 		return VisitExprTree(expr, func(current *Expr) error {
 			fn := current.GetF()
+			// Keep the persisted function ID in sync with INTERNAL_COLLATION_KEY.
+			// The plan package cannot import the function registry (cycle).
+			if fn != nil && fn.Func != nil && int32(fn.Func.Obj>>32) == internalCollationKeyFunctionID {
+				features.CollationKeyV1 = true
+			}
 			if !features.NumericPrefix && current.Typ.Charset == 255 && fn != nil && fn.Func != nil &&
 				strings.EqualFold(fn.Func.GetObjName(), "cast") {
 				features.NumericPrefix = true

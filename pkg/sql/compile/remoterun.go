@@ -2093,6 +2093,12 @@ func validateRemoteExpressionPipelineProtocol(
 			"signed INT ASCII results require MORPC protocol version 65",
 		)
 	}
+	if features.CollationKeyV1 &&
+		(!hasProtocolVersion || protocolVersion < defines.MORPCVersion68) {
+		return moerr.NewNotSupportedNoCtx(
+			"collation key expressions require MORPC protocol version 68",
+		)
+	}
 	return nil
 }
 
