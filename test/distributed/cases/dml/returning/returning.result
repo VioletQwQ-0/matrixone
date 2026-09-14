@@ -63,13 +63,13 @@ select count(*) from indexed_t where match(body) against('updated');
 count(*)
 1
 update indexed_t set id = 2 where id = 1 returning id;
-not supported: DML RETURNING does not support primary-key UPDATE on synchronous full-text/vector index
+id
+2
 delete from indexed_t where id = 1 returning id, email, body;
 id    email    body
-1    a@example.com    updated base row
 select count(*) from indexed_t where match(body) against('updated');
 count(*)
-0
+1
 set experimental_ivf_index = 1;
 create table vector_t(id bigint primary key, embedding vecf32(3));
 create index ivf_idx using ivfflat on vector_t(embedding) lists=1 op_type 'vector_l2_ops';
