@@ -7397,7 +7397,7 @@ func buildPreInsertFullTextIndex(stmt *tree.Insert, ctx CompilerContext, builder
 	if partitioned {
 		apply_project = append(apply_project, &plan.Expr{
 			Typ:  routeTyp,
-			Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: sourceTag, ColPos: routePos}},
+			Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: 0, ColPos: routePos}},
 		})
 	}
 

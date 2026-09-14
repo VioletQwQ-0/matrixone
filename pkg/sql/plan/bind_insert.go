@@ -754,7 +754,18 @@ func (builder *QueryBuilder) appendOnDupIrregularMaintSource(
 	tableDef *plan.TableDef,
 	objRef *plan.ObjectRef,
 ) (int32, error) {
+	preserveMaintenanceSink := func(nodeID int32) {
+		// These sinks are consumed by the irregular-index builders after
+		// createQuery has pruned the normal DML graph. Keep the complete final
+		// image so those builders can address table columns by their catalog
+		// positions.
+		if builder.preserveSinkProjection == nil {
+			builder.preserveSinkProjection = make(map[int32]struct{})
+		}
+		builder.preserveSinkProjection[nodeID] = struct{}{}
+	}
 	sinkID := appendSinkNodeWithTag(builder, bindCtx, finalProjNodeID, finalProjTag)
+	preserveMaintenanceSink(sinkID)
 	joinStep := builder.appendStep(sinkID)
 	builder.preserveIrregularMaintRoute(joinStep, deleteRoutePos)
 	maintStep := joinStep
@@ -770,6 +781,7 @@ func (builder *QueryBuilder) appendOnDupIrregularMaintSource(
 			NodeType: plan.Node_FILTER, Children: []int32{selectedScanID}, FilterList: []*plan.Expr{selected},
 		}, bindCtx)
 		selectedSinkID := appendSinkNodeWithTag(builder, bindCtx, selectedID, finalProjTag)
+		preserveMaintenanceSink(selectedSinkID)
 		maintStep = builder.appendStep(selectedSinkID)
 		builder.preserveIrregularMaintRoute(maintStep, deleteRoutePos)
 	}
@@ -806,6 +818,7 @@ func (builder *QueryBuilder) appendOnDupIrregularMaintSource(
 			}},
 		}, bindCtx)
 		changedSinkID := appendSinkNodeWithTag(builder, bindCtx, changedID, finalProjTag)
+		preserveMaintenanceSink(changedSinkID)
 		maintStep = builder.appendStep(changedSinkID)
 		builder.preserveIrregularMaintRoute(maintStep, deleteRoutePos)
 	}
@@ -837,6 +850,7 @@ func (builder *QueryBuilder) appendOnDupIrregularMaintSource(
 			NodeType: plan.Node_FILTER, Children: []int32{newRowsScanID}, FilterList: []*plan.Expr{isNewRow},
 		}, bindCtx)
 		newRowsSinkID := appendSinkNodeWithTag(builder, bindCtx, newRowsID, finalProjTag)
+		preserveMaintenanceSink(newRowsSinkID)
 		insertOnlyStep = builder.appendStep(newRowsSinkID)
 		builder.preserveIrregularMaintRoute(insertOnlyStep, deleteRoutePos)
 	}
@@ -884,6 +898,7 @@ func (builder *QueryBuilder) appendOnDupIrregularMaintSource(
 			NodeType: plan.Node_FILTER, Children: []int32{changedRowsScanID}, FilterList: []*plan.Expr{eligible},
 		}, bindCtx)
 		changedRowsSinkID := appendSinkNodeWithTag(builder, bindCtx, changedRowsID, finalProjTag)
+		preserveMaintenanceSink(changedRowsSinkID)
 		valueChangedSteps[groupKey] = builder.appendStep(changedRowsSinkID)
 		builder.preserveIrregularMaintRoute(valueChangedSteps[groupKey], deleteRoutePos)
 	}

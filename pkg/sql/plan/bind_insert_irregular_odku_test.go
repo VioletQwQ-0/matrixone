@@ -240,6 +240,7 @@ func TestPartitionedFulltextMaintenanceUsesIndexOnlyMultiUpdate(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, maintenance, "one logical FULLTEXT index must produce one routed maintenance branch")
+	assertPartitionedFulltextApplyInputs(t, query)
 }
 
 func TestPartitionedFulltextMaintenanceRebuildsWhenPartitionColumnChanges(t *testing.T) {
@@ -280,11 +281,14 @@ func TestPartitionedFulltextMaintenanceRebuildsWhenPartitionColumnChanges(t *tes
 		"partition-key updates need independent routed delete and insert maintenance branches")
 
 	t.Run("ODKU route changes are part of the value-change marker", func(t *testing.T) {
-		shape := inspectFulltextODKUPlan(t, mock,
-			"insert into constraint_test.docs_ft(id, body, payload, embedding) values (1, 'incoming', 1, '[1,2,3]') on duplicate key update payload = values(payload)")
+		const sql = "insert into constraint_test.docs_ft(id, body, payload, embedding) values (1, 'incoming', 1, '[1,2,3]') on duplicate key update payload = values(payload)"
+		shape := inspectFulltextODKUPlan(t, mock, sql)
 		require.Len(t, shape.valueChangeFilter, 1)
 		require.ElementsMatch(t, []string{"id", "body", "payload"},
 			nullSafeEqualityColumns(t, shape.valueChangeFilter[0].markerExpr))
+		logicPlan, err := runOneStmt(mock, t, sql)
+		require.NoError(t, err)
+		assertPartitionedFulltextApplyInputs(t, logicPlan.GetQuery())
 	})
 
 	t.Run("document primary key changes rebuild both branches", func(t *testing.T) {
@@ -315,6 +319,47 @@ func TestPartitionedFulltextMaintenanceRebuildsWhenPartitionColumnChanges(t *tes
 			"document-key updates need independent routed delete and insert maintenance branches")
 	})
 
+}
+
+func assertPartitionedFulltextApplyInputs(t *testing.T, query *planpb.Query) {
+	t.Helper()
+	found := 0
+	for _, apply := range query.Nodes {
+		if apply == nil || apply.NodeType != planpb.Node_APPLY || len(apply.Children) != 2 {
+			continue
+		}
+		if apply.Children[0] < 0 || int(apply.Children[0]) >= len(query.Nodes) ||
+			apply.Children[1] < 0 || int(apply.Children[1]) >= len(query.Nodes) {
+			continue
+		}
+		source := query.Nodes[apply.Children[0]]
+		tableFunc := query.Nodes[apply.Children[1]]
+		if source == nil || tableFunc == nil || tableFunc.NodeType != planpb.Node_FUNCTION_SCAN ||
+			tableFunc.TableDef == nil || tableFunc.TableDef.TblFunc == nil ||
+			tableFunc.TableDef.TblFunc.Name != "fulltext_index_tokenize" {
+			continue
+		}
+		found++
+		require.Len(t, source.BindingTags, 1, "partitioned FULLTEXT Apply source must have one binding tag")
+		sourceTag := source.BindingTags[0]
+		for _, arg := range tableFunc.TblFuncExprList {
+			col := arg.GetCol()
+			require.NotNil(t, col, "FULLTEXT tokenizer arguments must be source columns")
+			require.Equal(t, sourceTag, col.RelPos,
+				"FULLTEXT tokenizer argument must read the materialized source")
+			require.GreaterOrEqual(t, col.ColPos, int32(0))
+			require.Less(t, int(col.ColPos), len(source.ProjectList),
+				"FULLTEXT tokenizer argument must survive source-sink pruning")
+		}
+		require.GreaterOrEqual(t, len(apply.ProjectList), len(tableFunc.TableDef.Cols)+1)
+		route := apply.ProjectList[len(tableFunc.TableDef.Cols)].GetCol()
+		require.NotNil(t, route, "partitioned FULLTEXT Apply must project its route")
+		require.Zero(t, route.RelPos,
+			"partition route is a left-input column, not a table-function result")
+		require.GreaterOrEqual(t, route.ColPos, int32(0))
+		require.Less(t, int(route.ColPos), len(source.ProjectList))
+	}
+	require.Positive(t, found, "partitioned FULLTEXT maintenance tokenizer is missing")
 }
 
 func TestPartitionedFulltextDMLShapesBuildRoutedMaintenance(t *testing.T) {
