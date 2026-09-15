@@ -202,6 +202,41 @@ func TestOrdinaryStringFunctionInheritsColumnCoercibility(t *testing.T) {
 	require.Equal(t, uint8(types.CharsetUTF8MB40900AI), candidate.charset)
 }
 
+func TestNativeCollationMetadataSurvivesCopyFoldAndWire(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+	native := pb.Type{
+		Id:                       int32(types.T_varchar),
+		Charset:                  uint32(types.CharsetUTF8MB40900AI),
+		CollationCoercibility:    4,
+		CollationCoercibilitySet: true,
+	}
+	literal := makePlan2StringConstExprWithType("Alpha")
+	literal.Typ = native
+	expr, err := BindFuncExprImplByPlanExpr(context.Background(), "lower", []*pb.Expr{literal})
+	require.NoError(t, err)
+	require.Equal(t, native.Charset, expr.Typ.Charset)
+	require.Equal(t, uint32(4), expr.Typ.CollationCoercibility)
+	require.True(t, expr.Typ.CollationCoercibilitySet)
+
+	cloned := DeepCopyExpr(expr)
+	require.Equal(t, expr.Typ.CollationCoercibility, cloned.Typ.CollationCoercibility)
+	require.Equal(t, expr.Typ.CollationCoercibilitySet, cloned.Typ.CollationCoercibilitySet)
+
+	folded, err := ConstantFold(batch.EmptyForConstFoldBatch, DeepCopyExpr(expr), proc, false, true)
+	require.NoError(t, err)
+	require.Equal(t, native.Charset, folded.Typ.Charset)
+	require.Equal(t, uint32(4), folded.Typ.CollationCoercibility)
+	require.True(t, folded.Typ.CollationCoercibilitySet)
+
+	wire, err := expr.Marshal()
+	require.NoError(t, err)
+	var restored pb.Expr
+	require.NoError(t, restored.Unmarshal(wire))
+	require.Equal(t, expr.Typ.CollationCoercibility, restored.Typ.CollationCoercibility)
+	require.Equal(t, expr.Typ.CollationCoercibilitySet, restored.Typ.CollationCoercibilitySet)
+}
+
 func TestEqualRankNonBinaryCollationsAreRejectedForComparison(t *testing.T) {
 	left := &pb.Expr{
 		Typ:  pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8)},
