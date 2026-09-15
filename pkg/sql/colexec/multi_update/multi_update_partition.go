@@ -165,7 +165,7 @@ func (op *PartitionMultiUpdate) Prepare(
 					!proto.Equal(&ctx.PartitionIndexCtx.PartitionCol, &route) ||
 					ctx.ObjRef == nil || ctx.TableDef == nil ||
 					(ctx.ObjRef.Obj > 0 && uint64(ctx.ObjRef.Obj) != ctx.TableDef.TblId) ||
-					!features.IsIndexTable(ctx.TableDef.FeatureFlag) ||
+					!isIndexTargetTableDef(ctx.TableDef) ||
 					!containsPartitionIndex(target.mainIndexes, ctx.TableDef.TblId) {
 					return moerr.NewInvalidInputf(proc.Ctx, "partition fulltext index %d is not owned by parent %d", ctx.TableDef.GetTblId(), target.tableID)
 				}
@@ -223,7 +223,7 @@ func buildPartitionUpdateTargets(contexts []*MultiUpdateCtx) []*partitionUpdateT
 			target.contexts = append(target.contexts, cloneTargetContext(ctx))
 			continue
 		}
-		if features.IsIndexTable(ctx.TableDef.FeatureFlag) {
+		if isIndexTargetTableDef(ctx.TableDef) {
 			continue
 		}
 		target := &partitionUpdateTarget{
@@ -235,7 +235,7 @@ func buildPartitionUpdateTargets(contexts []*MultiUpdateCtx) []*partitionUpdateT
 		targets = append(targets, target)
 	}
 	for _, ctx := range contexts {
-		if ctx.PartitionIndexCtx != nil || !features.IsIndexTable(ctx.TableDef.FeatureFlag) {
+		if ctx.PartitionIndexCtx != nil || !isIndexTargetTableDef(ctx.TableDef) {
 			continue
 		}
 		if target := targetsByMain[ctx.TargetUpdateCtxIdx]; target != nil {
@@ -544,7 +544,7 @@ func (op *PartitionMultiUpdate) resolvePartitionContexts(
 	resolved := make([]*MultiUpdateCtx, len(contexts))
 	for i, ctx := range contexts {
 		r := rel
-		if features.IsIndexTable(ctx.TableDef.FeatureFlag) {
+		if isIndexTargetTableDef(ctx.TableDef) {
 			r, err = op.getPartitionIndex(
 				proc,
 				target,

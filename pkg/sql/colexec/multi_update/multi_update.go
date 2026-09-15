@@ -31,7 +31,6 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/defines"
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
-	"github.com/matrixorigin/matrixone/pkg/sql/features"
 	v2 "github.com/matrixorigin/matrixone/pkg/util/metric/v2"
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
@@ -65,7 +64,7 @@ func (update *MultiUpdate) Prepare(proc *process.Process) error {
 	if update.ctr.updateCtxInfos == nil {
 		update.ctr.updateCtxInfos = make(map[string]*updateCtxInfo)
 		for _, updateCtx := range update.MultiUpdateCtx {
-			if !features.IsIndexTable(updateCtx.TableDef.FeatureFlag) {
+			if !isIndexTargetTableDef(updateCtx.TableDef) {
 				update.mainTable = updateCtx.TableDef.TblId
 			}
 
@@ -762,7 +761,7 @@ func (update *MultiUpdate) prepareSeenTargetRows(proc *process.Process) error {
 	}
 	targetCounts := make(map[uint64]int)
 	for _, ctx := range update.MultiUpdateCtx {
-		if !features.IsIndexTable(ctx.TableDef.FeatureFlag) {
+		if !isIndexTargetTableDef(ctx.TableDef) {
 			targetCounts[targetTableID(ctx)]++
 		}
 	}

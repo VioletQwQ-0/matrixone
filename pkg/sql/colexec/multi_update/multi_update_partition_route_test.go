@@ -112,10 +112,9 @@ func TestPartitionMultiUpdateRoutesIndexOnlyTargetsThroughPhysicalRelations(t *t
 
 	indexDef := func(id uint64, name string) *plan.TableDef {
 		return &plan.TableDef{
-			TblId:       id,
-			Name:        name,
-			TableType:   catalog.FullTextIndex_TblType,
-			FeatureFlag: features.IndexTable,
+			TblId:     id,
+			Name:      name,
+			TableType: catalog.FullTextIndex_TblType,
 			Cols: []*plan.ColDef{
 				{ColId: 0, Name: "token", Typ: i64typ},
 				{ColId: 1, Name: "pk", Typ: i64typ},

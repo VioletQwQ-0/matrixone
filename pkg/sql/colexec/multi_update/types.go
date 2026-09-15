@@ -23,6 +23,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/common/rscthrottler"
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
+	"github.com/matrixorigin/matrixone/pkg/sql/features"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan"
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/matrixorigin/matrixone/pkg/vm/engine"
@@ -73,6 +74,14 @@ func isSecondaryIndexTableDef(tableDef *plan.TableDef) bool {
 		(catalog.IsSecondaryIndexTable(tableDef.Name) ||
 			catalog.IsFullTextIndexTableType(tableDef.TableType, tableDef.Name) ||
 			catalog.IsFullTextIndexTableType(catalog.SystemIndexRel, tableDef.Name))
+}
+
+// isIndexTargetTableDef recognizes both flag-based index tables and classic
+// FULLTEXT hidden tables. The latter use their catalog table type/name as the
+// discriminator and may not carry the IndexTable feature flag.
+func isIndexTargetTableDef(tableDef *plan.TableDef) bool {
+	return tableDef != nil &&
+		(features.IsIndexTable(tableDef.FeatureFlag) || isSecondaryIndexTableDef(tableDef))
 }
 
 func isSecondaryIndexTableName(name string) bool {

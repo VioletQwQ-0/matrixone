@@ -397,6 +397,38 @@ func TestBuildPartitionUpdateTargetsKeepsPhysicalTargetsIndependent(t *testing.T
 	require.NotSame(t, contexts[1], targets[1].contexts[0])
 }
 
+func TestBuildPartitionUpdateTargetsGroupsClassicFulltextWithMain(t *testing.T) {
+	contexts := []*MultiUpdateCtx{
+		{
+			ObjRef: &plan.ObjectRef{},
+			TableDef: &plan.TableDef{
+				TblId:       20,
+				Name:        "partitioned",
+				FeatureFlag: features.Partitioned,
+			},
+			TargetUpdateCtxIdx: 0,
+		},
+		{
+			ObjRef: &plan.ObjectRef{},
+			TableDef: &plan.TableDef{
+				TblId:     21,
+				Name:      catalog.FullTextIndexTableNamePrefix + "docs_body",
+				TableType: catalog.SystemIndexRel,
+			},
+			TargetUpdateCtxIdx: 0,
+		},
+	}
+
+	targets := buildPartitionUpdateTargets(contexts)
+
+	require.Len(t, targets, 1)
+	require.Equal(t, uint64(20), targets[0].tableID)
+	require.Len(t, targets[0].contexts, 2)
+	require.Equal(t, uint64(21), targets[0].contexts[1].TableDef.TblId)
+	require.False(t, features.IsIndexTable(contexts[1].TableDef.FeatureFlag))
+	require.True(t, isIndexTargetTableDef(contexts[1].TableDef))
+}
+
 func TestPartitionWriterIDsSeparateAliasesOfSamePhysicalTable(t *testing.T) {
 	first := &partitionUpdateTarget{writerIDs: make(map[uint64]uint64)}
 	second := &partitionUpdateTarget{writerIDs: make(map[uint64]uint64)}
