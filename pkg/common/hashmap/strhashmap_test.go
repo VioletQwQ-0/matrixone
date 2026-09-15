@@ -459,6 +459,43 @@ func TestStrHashMapLegacyCollationKeysRemainBytewise(t *testing.T) {
 	}
 }
 
+func TestStrHashMapLegacyCollationAcceptsRawBytes(t *testing.T) {
+	for _, charset := range []uint8{types.CharsetUTF8MB4Bin, types.CharsetUTF8} {
+		t.Run(fmt.Sprintf("charset-%d", charset), func(t *testing.T) {
+			mp := mpool.MustNewZero()
+			defer func() { require.Zero(t, mp.CurrNB()) }()
+			typ := types.NewWithCharset(types.T_varchar, 32, 0, charset)
+			build := vector.NewVec(typ)
+			defer build.Free(mp)
+			require.NoError(t, vector.AppendBytes(build, []byte{0xff}, false, mp))
+			hashMap, err := NewStrHashMap(false, mp)
+			require.NoError(t, err)
+			defer hashMap.Free()
+			values, _, err := hashMap.NewIterator().Insert(0, 1, []*vector.Vector{build})
+			require.NoError(t, err)
+			require.Equal(t, []uint64{1}, values)
+		})
+	}
+}
+
+func TestStrHashMapNativeCollationRejectsInvalidUTF8(t *testing.T) {
+	for _, charset := range []uint8{types.CharsetUTF8MB40900AI, types.CharsetUTF8MB40900Bin} {
+		t.Run(fmt.Sprintf("charset-%d", charset), func(t *testing.T) {
+			mp := mpool.MustNewZero()
+			defer func() { require.Zero(t, mp.CurrNB()) }()
+			typ := types.NewWithCharset(types.T_varchar, 32, 0, charset)
+			build := vector.NewVec(typ)
+			defer build.Free(mp)
+			require.NoError(t, vector.AppendBytes(build, []byte{0xff}, false, mp))
+			hashMap, err := NewStrHashMap(false, mp)
+			require.NoError(t, err)
+			defer hashMap.Free()
+			_, _, err = hashMap.NewIterator().Insert(0, 1, []*vector.Vector{build})
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestStrHashMapCanonicalVarlenaVectorShapes(t *testing.T) {
 	negativeZero := float32(math.Copysign(0, -1))
 	negativeZero64 := math.Copysign(0, -1)

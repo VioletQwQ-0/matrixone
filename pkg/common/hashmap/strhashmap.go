@@ -445,6 +445,13 @@ func validateCollationHashValues(vec *vector.Vector, start, count int) error {
 	if vec == nil || !vec.GetType().Oid.IsMySQLString() {
 		return nil
 	}
+	if !types.IsNative0900Collation(vec.GetType().Charset) {
+		// Legacy identities keep the historical raw-byte hash path.  Do not
+		// validate or allocate a native weight key for them; doing so would
+		// change error behavior for old malformed-byte inputs as well as their
+		// grouping identity.
+		return nil
+	}
 	part, err := types.ResolveStringKeyPart(*vec.GetType(), types.PADSpaceKeyV1)
 	if err != nil {
 		return err

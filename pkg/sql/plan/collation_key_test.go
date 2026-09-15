@@ -214,7 +214,7 @@ func TestConcatPreservesExplicitCollationConflict(t *testing.T) {
 		Expr: leftLiteral.Expr,
 	}
 	concat := &pb.Expr{
-		Typ: left.Typ,
+		Typ: pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB40900AI)},
 		Expr: &pb.Expr_F{F: &pb.Function{
 			Func: &pb.ObjectRef{ObjName: "concat"},
 			Args: []*pb.Expr{left},
