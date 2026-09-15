@@ -34,6 +34,16 @@ func TestBuildPlanRejectsNativeCollationByDefault(t *testing.T) {
 	require.ErrorContains(t, err, native0900AdmissionError)
 }
 
+func TestBuildPlanRejectsFoldedNativeCollationByDefault(t *testing.T) {
+	native0900AdmissionDisabled(t)
+	ctx := NewMockCompilerContext(true)
+	stmt, err := parsers.ParseOne(ctx.GetContext(), dialect.MYSQL,
+		"select ('Alpha' collate utf8mb4_0900_ai_ci) = 'alpha'", 1)
+	require.NoError(t, err)
+	_, err = BuildPlan(ctx, stmt, false)
+	require.ErrorContains(t, err, native0900AdmissionError)
+}
+
 func TestNativeCollationRelationFormatIsRejectedByDefault(t *testing.T) {
 	native0900AdmissionDisabled(t)
 	p := &planpb.Plan{Plan: &planpb.Plan_Query{Query: &planpb.Query{

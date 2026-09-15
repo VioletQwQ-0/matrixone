@@ -2613,6 +2613,74 @@ func nativeComparisonColumn(expr *plan.Expr) *plan.ColRef {
 	return nil
 }
 
+// nativeComparisonIdentity returns the physical native-collation identity
+// already present on one comparison operand.  A physical-key rewrite is valid
+// only when every operand uses the same identity as the hidden primary key;
+// otherwise replacing the original predicate would erase a residual semantic
+// filter (for example an explicit utf8mb4_bin comparison on a 0900-ai-ci key).
+func nativeComparisonIdentity(expr *plan.Expr) (uint8, bool) {
+	if expr == nil || expr.Typ.Charset > 255 {
+		return 0, false
+	}
+	if fn := expr.GetF(); fn != nil && fn.Func != nil {
+		switch fn.Func.ObjName {
+		case "internal_collation_key":
+			if len(fn.Args) == 2 && fn.Args[1] != nil && fn.Args[1].GetLit() != nil {
+				charset := fn.Args[1].GetLit().GetU64Val()
+				if charset <= 255 && types.IsNative0900Collation(uint8(charset)) {
+					return uint8(charset), true
+				}
+			}
+			return 0, false
+		default:
+			if fn.ExplicitCollation {
+				charset := uint8(expr.Typ.Charset)
+				if types.IsNative0900Collation(charset) {
+					return charset, true
+				}
+				return 0, false
+			}
+		}
+	}
+	charset := uint8(expr.Typ.Charset)
+	return charset, types.IsNative0900Collation(charset)
+}
+
+func nativeFilterUsesPhysicalIdentity(filter *plan.Expr, charset uint8) bool {
+	if filter == nil || !types.IsNative0900Collation(charset) {
+		return false
+	}
+	fn := filter.GetF()
+	if fn == nil || fn.Func == nil || len(fn.Args) < 2 {
+		return false
+	}
+	left, ok := nativeComparisonIdentity(fn.Args[0])
+	if !ok || left != charset {
+		return false
+	}
+	check := func(expr *plan.Expr) bool {
+		identity, ok := nativeComparisonIdentity(expr)
+		return ok && identity == charset
+	}
+	switch fn.Func.ObjName {
+	case "in":
+		list := fn.Args[1].GetList()
+		if list == nil {
+			return false
+		}
+		for _, item := range list.List {
+			if !check(item) {
+				return false
+			}
+		}
+		return true
+	case "between":
+		return len(fn.Args) == 3 && check(fn.Args[1]) && check(fn.Args[2])
+	default:
+		return check(fn.Args[1])
+	}
+}
+
 func (builder *QueryBuilder) rewriteNativeSinglePrimaryKeyFilters(
 	tableDef *plan.TableDef,
 	tableTag, physicalPos int32,
@@ -2634,6 +2702,9 @@ func (builder *QueryBuilder) rewriteNativeSinglePrimaryKeyFilters(
 	for i, filter := range filters {
 		fn := filter.GetF()
 		if fn == nil || fn.Func == nil || len(fn.Args) < 2 {
+			continue
+		}
+		if !nativeFilterUsesPhysicalIdentity(filter, uint8(partType.Charset)) {
 			continue
 		}
 		column := nativeComparisonColumn(fn.Args[0])

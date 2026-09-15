@@ -326,9 +326,9 @@ func TestStrHashMapCharKeysUsePadSpaceSemantics(t *testing.T) {
 		{
 			name:       "varchar control",
 			typ:        types.New(types.T_varchar, 8, 0),
-			wantValues: []uint64{1, 1, 2, 3, 3},
-			wantGroups: 3,
-			wantProbe:  1,
+			wantValues: []uint64{1, 2, 3, 4, 5},
+			wantGroups: 5,
+			wantProbe:  0,
 		},
 	} {
 		for _, hasNull := range []bool{false, true} {
@@ -433,6 +433,28 @@ func TestStrHashMapNative0900CollationKeys(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, uint64(1), values[0])
 			require.Equal(t, int64(1), zValues[0])
+		})
+	}
+}
+
+func TestStrHashMapLegacyCollationKeysRemainBytewise(t *testing.T) {
+	for _, charset := range []uint8{types.CharsetUTF8MB4Bin, types.CharsetUTF8} {
+		t.Run(fmt.Sprintf("charset-%d", charset), func(t *testing.T) {
+			mp := mpool.MustNewZero()
+			defer func() { require.Zero(t, mp.CurrNB()) }()
+			typ := types.NewWithCharset(types.T_varchar, 32, 0, charset)
+			build := vector.NewVec(typ)
+			defer build.Free(mp)
+			for _, value := range []string{"a", "a "} {
+				require.NoError(t, vector.AppendBytes(build, []byte(value), false, mp))
+			}
+			hashMap, err := NewStrHashMap(false, mp)
+			require.NoError(t, err)
+			defer hashMap.Free()
+			values, _, err := hashMap.NewIterator().Insert(0, build.Length(), []*vector.Vector{build})
+			require.NoError(t, err)
+			require.Equal(t, []uint64{1, 2}, values)
+			require.Equal(t, uint64(2), hashMap.GroupCount())
 		})
 	}
 }

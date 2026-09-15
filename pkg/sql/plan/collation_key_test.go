@@ -202,6 +202,35 @@ func TestOrdinaryStringFunctionInheritsColumnCoercibility(t *testing.T) {
 	require.Equal(t, uint8(types.CharsetUTF8MB40900AI), candidate.charset)
 }
 
+func TestConcatPreservesExplicitCollationConflict(t *testing.T) {
+	leftLiteral := makePlan2StringConstExprWithType("a")
+	left := &pb.Expr{
+		Typ: pb.Type{
+			Id:                       int32(types.T_varchar),
+			Charset:                  uint32(types.CharsetUTF8MB40900AI),
+			CollationCoercibility:    0,
+			CollationCoercibilitySet: true,
+		},
+		Expr: leftLiteral.Expr,
+	}
+	concat := &pb.Expr{
+		Typ: left.Typ,
+		Expr: &pb.Expr_F{F: &pb.Function{
+			Func: &pb.ObjectRef{ObjName: "concat"},
+			Args: []*pb.Expr{left},
+		}},
+	}
+	right := makePlan2StringConstExprWithType("a")
+	right.Typ = pb.Type{
+		Id:                       int32(types.T_varchar),
+		Charset:                  uint32(types.CharsetUTF8MB40900Bin),
+		CollationCoercibility:    0,
+		CollationCoercibilitySet: true,
+	}
+	err := normalizeCollationCoercibilityArgs(context.Background(), "=", []*pb.Expr{concat, right})
+	require.ErrorContains(t, err, "illegal mix of collations")
+}
+
 func TestNativeCollationMetadataSurvivesCopyFoldAndWire(t *testing.T) {
 	proc := testutil.NewProcess(t)
 	defer proc.Free()

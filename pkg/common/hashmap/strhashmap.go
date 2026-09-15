@@ -422,7 +422,10 @@ func canonicalVarlenaHashValueForType(typ types.Type, value []byte) []byte {
 	// comparison key is generated; the direct collation comparator and the
 	// stored tuple key both see those bytes.
 	if !types.IsNative0900Collation(typ.Charset) {
-		value = canonicalVarlenaHashValue(typ.Oid, value)
+		// Legacy text identities retain the historical bytewise hash contract
+		// (apart from CHAR's existing trailing-space canonicalization).  Their
+		// direct comparison and sort paths do not consume native weight keys.
+		return canonicalVarlenaHashValue(typ.Oid, value)
 	}
 	part, err := types.ResolveStringKeyPart(typ, types.PADSpaceKeyV1)
 	if err != nil || !part.Transformed() {

@@ -6545,7 +6545,11 @@ func collationCandidateForFunction(name string, args []*plan.Expr, fallback uint
 				return collationCandidate{}, false, err
 			}
 		}
-		chosen.rank = 1
+		// Vitess/MySQL assigns coercibility NONE (1) only when concatenation
+		// actually combines different collations.  Preserve an explicit or
+		// otherwise stronger source when all inputs resolve to one identity;
+		// otherwise a single explicit COLLATE would be weakened and could lose
+		// an equal-rank conflict against the other side of a comparison.
 		return chosen, true, nil
 	}
 	return children[0], true, nil
