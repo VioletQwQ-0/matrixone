@@ -20,6 +20,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/matrixorigin/matrixone/pkg/common/collation"
 	"github.com/matrixorigin/matrixone/pkg/common/hashmap"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -219,6 +220,14 @@ func compareNullableRaw(a *vector.Vector, ai int, b *vector.Vector, bi int) int 
 
 func compareVectorValue(a *vector.Vector, ai int, b *vector.Vector, bi int, typ types.Type) int {
 	x, y := a.GetRawBytesAt(ai), b.GetRawBytesAt(bi)
+	if typ.Oid.IsMySQLString() {
+		switch typ.Charset {
+		case types.CharsetUTF8MB40900AI:
+			return collation.UCA0900AICollate(a.GetBytesAt(ai), b.GetBytesAt(bi))
+		case types.CharsetUTF8MB40900Bin:
+			return collation.UCA0900BinCollate(a.GetBytesAt(ai), b.GetBytesAt(bi))
+		}
+	}
 	switch typ.Oid {
 	case types.T_bool:
 		return types.BoolAscCompare(types.DecodeBool(x), types.DecodeBool(y))

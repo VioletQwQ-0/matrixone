@@ -92,3 +92,25 @@ func TestCollationKeyConstantsAndSelection(t *testing.T) {
 	defer nonconst.Free(proc.Mp())
 	require.Error(t, internalCollationKey([]*vector.Vector{constant, nonconst}, result, proc, 3, nil))
 }
+
+func TestNative0900CollationKeysPreserveIdentityRules(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+	for _, charset := range []uint8{types.CharsetUTF8MB40900AI, types.CharsetUTF8MB40900Bin} {
+		typ := types.NewWithCharset(types.T_varchar, 64, 0, charset)
+		input := newVectorByType(proc.Mp(), typ, []string{"Alpha", "alpha", "Alpha "}, nil)
+		defer input.Free(proc.Mp())
+		charsetVec := mustNewConstFixed(t, types.T_uint64.ToType(), uint64(charset), proc)
+		defer charsetVec.Free(proc.Mp())
+		result := vector.NewFunctionResultWrapper(types.T_varbinary.ToType(), proc.Mp())
+		require.NoError(t, result.PreExtendAndReset(3))
+		require.NoError(t, internalCollationKey([]*vector.Vector{input, charsetVec}, result, proc, 3, nil))
+		if charset == types.CharsetUTF8MB40900AI {
+			require.Equal(t, result.GetResultVector().GetBytesAt(0), result.GetResultVector().GetBytesAt(1))
+		} else {
+			require.NotEqual(t, result.GetResultVector().GetBytesAt(0), result.GetResultVector().GetBytesAt(1))
+		}
+		require.NotEqual(t, result.GetResultVector().GetBytesAt(0), result.GetResultVector().GetBytesAt(2))
+		result.Free()
+	}
+}

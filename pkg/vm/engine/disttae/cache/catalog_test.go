@@ -151,10 +151,12 @@ func TestGetTableDefRestoresChecksFromSchemaExtra(t *testing.T) {
 		ExtraInfo: &api.SchemaExtra{
 			Checks:         []*plan.CheckDef{check},
 			DefaultCharset: uint32(types.CharsetBinary),
+			KeyFormat:      uint32(types.PADSpaceKeyV1),
 		},
 	}, nil)
 	require.Equal(t, []*plan.CheckDef{check}, tableDef.Checks)
 	require.Equal(t, uint32(types.CharsetBinary), tableDef.DefaultCharset)
+	require.Equal(t, uint32(types.PADSpaceKeyV1), tableDef.KeyFormat)
 }
 
 func TestGetTableDefKeepsTemporarySessionStateContextual(t *testing.T) {

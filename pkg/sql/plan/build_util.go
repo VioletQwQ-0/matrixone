@@ -505,12 +505,13 @@ func collationForName(name string) (uint32, bool) {
 		return uint32(types.CharsetBinary), true
 	case "utf8_bin", "utf8mb3_bin", "utf8mb4_bin":
 		return uint32(types.CharsetUTF8MB4Bin), true
-	case "utf8_general_ci", "utf8mb3_general_ci", "utf8mb4_general_ci", "utf8mb4_0900_ai_ci",
+	case "utf8_general_ci", "utf8mb3_general_ci", "utf8mb4_general_ci",
 		"latin1_swedish_ci", "ascii_general_ci":
-		// MySQL 8 uses utf8mb4_0900_ai_ci by default. Accept that exact spelling
-		// as a DDL compatibility alias, but normalize it to MatrixOne's existing
-		// general-ci identity instead of claiming native UCA 9.0 semantics.
 		return uint32(types.CharsetUTF8), true
+	case "utf8mb4_0900_ai_ci":
+		return uint32(types.CharsetUTF8MB40900AI), true
+	case "utf8mb4_0900_bin":
+		return uint32(types.CharsetUTF8MB40900Bin), true
 	default:
 		// Do not silently alias other advertised UCA/0900 collations to either
 		// legacy general_ci or byte ordering. Their weight and padding contracts differ.
@@ -530,8 +531,6 @@ func unsupportedCollationError(ctx context.Context, name string) error {
 	case "utf8mb4_unicode_ci",
 		"utf8mb4_de_pb_0900_ai_ci", "utf8mb4_is_0900_ai_ci", "utf8mb4_lv_0900_ai_ci":
 		replacement = "utf8mb4_general_ci"
-	case "utf8mb4_0900_bin":
-		replacement = "utf8mb4_bin"
 	}
 	if replacement != "" {
 		return moerr.NewInvalidInputf(ctx,
@@ -2076,10 +2075,12 @@ func substituteColRefsInExpr(expr *plan.Expr, projList []*plan.Expr, offset int3
 			Typ: expr.Typ,
 			Expr: &plan.Expr_F{
 				F: &plan.Function{
-					Func:          e.F.Func,
-					Args:          newArgs,
-					AggConfig:     bytes.Clone(e.F.AggConfig),
-					AggConfigType: e.F.AggConfigType,
+					Func:               e.F.Func,
+					Args:               newArgs,
+					AggConfig:          bytes.Clone(e.F.AggConfig),
+					AggConfigType:      e.F.AggConfigType,
+					SyntaxExplicitCast: e.F.SyntaxExplicitCast,
+					ExplicitCollation:  e.F.ExplicitCollation,
 				},
 			},
 		}

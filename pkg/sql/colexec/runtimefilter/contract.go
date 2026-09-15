@@ -184,16 +184,16 @@ func ExactKeyEncodingWithComponents(
 		return keycodec.ExactRuntimeFilterUnsupported
 	}
 
-	probeType := types.New(
-		types.T(spec.ProbeType.Id),
-		spec.ProbeType.Width,
-		spec.ProbeType.Scale,
-	)
-	declaredBuildType := types.New(
-		types.T(buildExpr.Typ.Id),
-		buildExpr.Typ.Width,
-		buildExpr.Typ.Scale,
-	)
+	// Preserve charset identity through validation. Dropping it here would
+	// accidentally admit a raw runtime filter for visible native 0900 text,
+	// whose bytes are not the SQL equality identity.
+	probeType := planType(*spec.ProbeType)
+	declaredBuildType := planType(buildExpr.Typ)
+	if (probeType.Oid.IsMySQLString() && types.IsNative0900Collation(probeType.Charset)) ||
+		(declaredBuildType.Oid.IsMySQLString() && types.IsNative0900Collation(declaredBuildType.Charset)) ||
+		(payloadType.Oid.IsMySQLString() && types.IsNative0900Collation(payloadType.Charset)) {
+		return keycodec.ExactRuntimeFilterUnsupported
+	}
 
 	// The probe/build edge is the SQL equality contract. The two payload edges
 	// defend stale plans and materialization drift. All three must advertise
@@ -329,6 +329,11 @@ func validateTupleEncodingComponents(
 		probeType := planType(spec.KeyComponentProbeTypes[i])
 		declaredBuildType := planType(arg.Typ)
 		actualBuildType := componentPayloadTypes[i]
+		if (probeType.Oid.IsMySQLString() && types.IsNative0900Collation(probeType.Charset)) ||
+			(declaredBuildType.Oid.IsMySQLString() && types.IsNative0900Collation(declaredBuildType.Charset)) ||
+			(actualBuildType.Oid.IsMySQLString() && types.IsNative0900Collation(actualBuildType.Charset)) {
+			return false
+		}
 		if keycodec.ExactRuntimeFilterEncodingForPair(
 			probeType, declaredBuildType,
 		) != keycodec.ExactRuntimeFilterRaw ||

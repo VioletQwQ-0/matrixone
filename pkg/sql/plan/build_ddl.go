@@ -3697,7 +3697,7 @@ func buildTableDefs(stmt *tree.CreateTable, ctx CompilerContext, createTable *pl
 					fmt.Sprintf("defining a virtual generated column '%s' as primary key", col.OriginName))
 			}
 		}
-		if len(primaryKeys) == 1 {
+		if len(primaryKeys) == 1 && !isNative0900Type(colMap[primaryKeys[0]].Typ) {
 			pkeyName = primaryKeys[0]
 			for _, col := range createTable.TableDef.Cols {
 				if col.Name == pkeyName {
@@ -3723,6 +3723,9 @@ func buildTableDefs(stmt *tree.CreateTable, ctx CompilerContext, createTable *pl
 				CompPkeyCol: colDef,
 			}
 			createTable.TableDef.Pkey = pkeyDef
+		}
+		if hasNative0900Columns(colMap, primaryKeys) {
+			createTable.TableDef.KeyFormat = uint32(types.PADSpaceKeyV1)
 		}
 		for _, primaryKey := range primaryKeys {
 			colMap[primaryKey].Default.NullAbility = false
@@ -3902,6 +3905,9 @@ func buildTableDefs(stmt *tree.CreateTable, ctx CompilerContext, createTable *pl
 				}
 			}
 		}
+	}
+	if err := requireNative0900Admission(ctx.GetContext(), ctx.GetProcess(), createTable.TableDef); err != nil {
+		return err
 	}
 
 	return nil
@@ -4392,6 +4398,10 @@ func buildUniqueIndexTable(createTable *plan.CreateTable, indexInfos []*tree.Uni
 
 			indexParts = append(indexParts, name)
 		}
+		setPhysicalKeyFormat(tableDef, indexDef, hasNative0900KeyParts(colMap, indexInfo.KeyParts))
+		if err := requireNative0900Admission(ctx.GetContext(), ctx.GetProcess(), tableDef); err != nil {
+			return err
+		}
 
 		var keyName string
 		if len(indexInfo.KeyParts) == 1 {
@@ -4776,6 +4786,10 @@ func buildRegularSecondaryIndexDef(ctx CompilerContext, indexInfo *tree.Index, c
 		}
 		indexParts = append(indexParts, name)
 	}
+	setPhysicalKeyFormat(tableDef, indexDef, hasNative0900KeyParts(colMap, indexInfo.KeyParts))
+	if err := requireNative0900Admission(ctx.GetContext(), ctx.GetProcess(), tableDef); err != nil {
+		return nil, nil, err
+	}
 
 	if !isPkAlreadyPresentInIndexParts {
 		indexParts = append(indexParts, catalog.CreateAlias(pkeyName))
@@ -4788,13 +4802,7 @@ func buildRegularSecondaryIndexDef(ctx CompilerContext, indexInfo *tree.Index, c
 		colDef := &ColDef{
 			Name: keyName,
 			Alg:  plan.CompressType_Lz4,
-			Typ: plan.Type{
-				// don't copy auto increment
-				Id:      colMap[pkeyName].Typ.Id,
-				Width:   colMap[pkeyName].Typ.Width,
-				Scale:   colMap[pkeyName].Typ.Scale,
-				Charset: colMap[pkeyName].Typ.Charset,
-			},
+			Typ:  indexTableKeyTypeForSinglePart(colMap[pkeyName], nil),
 			Default: &plan.Default{
 				NullAbility:  false,
 				Expr:         nil,

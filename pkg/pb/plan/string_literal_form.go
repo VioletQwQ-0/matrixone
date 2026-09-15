@@ -203,6 +203,8 @@ const (
 // the same release. ASCIIInt32Result requires MORPC v65 because ASCII keeps
 // its overload IDs but changes its physical result vector from UINT8 to INT32.
 // CollationKeyV1 requires MORPC v68 for the new weight-expression function ID.
+// NativeCollationV1 additionally requires the durable 0900 rollout gate: a
+// native type can survive constant folding without retaining the helper call.
 // A struct makes compatibility call sites name every capability instead of
 // relying on positional booleans.
 type RemoteExpressionFeatures struct {
@@ -213,6 +215,7 @@ type RemoteExpressionFeatures struct {
 	TypedConversionFunctions bool
 	ASCIIInt32Result         bool
 	CollationKeyV1           bool
+	NativeCollationV1        bool
 }
 
 func (features RemoteExpressionFeatures) Any() bool {
@@ -222,7 +225,8 @@ func (features RemoteExpressionFeatures) Any() bool {
 		features.FormatNumericArguments ||
 		features.TypedConversionFunctions ||
 		features.ASCIIInt32Result ||
-		features.CollationKeyV1
+		features.CollationKeyV1 ||
+		features.NativeCollationV1
 }
 
 // RequiredRemoteExpressionFeatures reports the independent versioned
@@ -232,6 +236,9 @@ func (features RemoteExpressionFeatures) Any() bool {
 func RequiredRemoteExpressionFeatures(owner any) (features RemoteExpressionFeatures, err error) {
 	err = walkExpressionsInOwner(owner, func(expr *Expr) error {
 		return VisitExprTree(expr, func(current *Expr) error {
+			if current != nil && (current.Typ.Charset == 4 || current.Typ.Charset == 5) {
+				features.NativeCollationV1 = true
+			}
 			fn := current.GetF()
 			// Keep the persisted function ID in sync with INTERNAL_COLLATION_KEY.
 			// The plan package cannot import the function registry (cycle).

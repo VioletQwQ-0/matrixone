@@ -114,6 +114,106 @@ func TestAlterTableAutoIncrementRejectsTableWithoutUserAutoColumn(t *testing.T) 
 	require.ErrorContains(t, err, "does not have an AUTO_INCREMENT column")
 }
 
+func TestAlterTableCharsetConversionRebuildsNativePhysicalKeys(t *testing.T) {
+	name := &plan.ColDef{
+		Name:    "name",
+		Primary: true,
+		Typ:     plan.Type{Id: int32(types.T_varchar), Width: 32, Charset: uint32(types.CharsetUTF8)},
+		Default: &plan.Default{NullAbility: false},
+	}
+	table := &plan.TableDef{
+		DefaultCharset: uint32(types.CharsetUTF8),
+		Cols: []*plan.ColDef{
+			{Name: "id", Typ: plan.Type{Id: int32(types.T_int32)}, Default: &plan.Default{}},
+			name,
+		},
+		Name2ColIndex: map[string]int32{"id": 0, "name": 1},
+		Pkey:          &plan.PrimaryKeyDef{Names: []string{"name"}, PkeyColName: "name"},
+		Indexes:       []*plan.IndexDef{{IndexName: "idx_name", Parts: []string{"name"}}},
+	}
+	option := tree.NewTableOptionCharsetConversionWithCollation("utf8mb4", "utf8mb4_0900_ai_ci")
+	require.NoError(t, applyAlterTableCharsetConversion(context.Background(), table, option))
+
+	require.Equal(t, uint32(types.CharsetUTF8MB40900AI), table.DefaultCharset)
+	require.Equal(t, uint32(types.CharsetUTF8MB40900AI), FindColumn(table.Cols, "name").Typ.Charset)
+	require.False(t, FindColumn(table.Cols, "name").Primary)
+	require.NotNil(t, table.Pkey.CompPkeyCol)
+	require.True(t, table.Pkey.CompPkeyCol.Hidden)
+	require.Equal(t, catalog.CPrimaryKeyColName, table.Pkey.PkeyColName)
+	require.Equal(t, int32(1), table.Name2ColIndex["name"])
+	require.Equal(t, int32(2), table.Name2ColIndex[catalog.CPrimaryKeyColName])
+	require.Equal(t, uint32(types.PADSpaceKeyV1), table.KeyFormat)
+	require.Equal(t, uint32(types.PADSpaceKeyV1), table.Indexes[0].KeyFormat)
+
+	// A native single-column primary key without secondary indexes must keep
+	// the table format set by the hidden physical key rebuild.
+	pkOnly := &plan.TableDef{
+		DefaultCharset: uint32(types.CharsetUTF8),
+		Cols: []*plan.ColDef{{
+			Name:    "name",
+			Primary: true,
+			Typ:     plan.Type{Id: int32(types.T_varchar), Width: 32, Charset: uint32(types.CharsetUTF8)},
+			Default: &plan.Default{NullAbility: false},
+		}},
+		Pkey: &plan.PrimaryKeyDef{Names: []string{"name"}, PkeyColName: "name"},
+	}
+	require.NoError(t, applyAlterTableCharsetConversion(context.Background(), pkOnly, option))
+	require.Equal(t, uint32(types.PADSpaceKeyV1), pkOnly.KeyFormat)
+	require.NotNil(t, pkOnly.Pkey.CompPkeyCol)
+	require.Empty(t, pkOnly.Indexes)
+
+	legacy := tree.NewTableOptionCharsetConversionWithCollation("utf8mb4", "utf8mb4_general_ci")
+	require.NoError(t, applyAlterTableCharsetConversion(context.Background(), table, legacy))
+	require.Equal(t, uint32(types.CharsetUTF8), table.DefaultCharset)
+	require.Equal(t, uint32(types.CharsetUTF8), FindColumn(table.Cols, "name").Typ.Charset)
+	require.Nil(t, table.Pkey.CompPkeyCol)
+	require.Equal(t, "name", table.Pkey.PkeyColName)
+	require.Equal(t, int32(1), table.Name2ColIndex["name"])
+	_, ok := table.Name2ColIndex[catalog.CPrimaryKeyColName]
+	require.False(t, ok)
+	require.True(t, FindColumn(table.Cols, "name").Primary)
+	require.Zero(t, table.KeyFormat)
+	require.Zero(t, table.Indexes[0].KeyFormat)
+}
+
+func TestAlterTableCharsetConversionRequiresCopy(t *testing.T) {
+	option := tree.NewTableOptionCharsetConversionWithCollation("utf8mb4", "utf8mb4_0900_ai_ci")
+	algorithm, err := ResolveAlterTableAlgorithm(context.Background(),
+		[]tree.AlterTableOption{option}, &plan.TableDef{})
+	require.NoError(t, err)
+	require.Equal(t, plan.AlterTable_COPY, algorithm)
+}
+
+func TestAlterTableCharsetOptionMarksOnlyConvertAsMigration(t *testing.T) {
+	for _, tc := range []struct {
+		sql     string
+		convert bool
+	}{
+		{sql: "ALTER TABLE t1 DEFAULT CHARACTER SET utf8mb4", convert: false},
+		{sql: "ALTER TABLE t1 CONVERT TO CHARACTER SET utf8mb4", convert: true},
+	} {
+		stmt, err := mysql.ParseOne(context.Background(), tc.sql, 1)
+		require.NoError(t, err)
+		alter, ok := stmt.(*tree.AlterTable)
+		require.True(t, ok)
+		require.Len(t, alter.Options, 1)
+		option, ok := alter.Options[0].(*tree.TableOptionCharset)
+		require.True(t, ok)
+		require.Equal(t, tc.convert, option.Convert)
+	}
+	defaultOption := tree.NewTableOptionCharset("utf8mb4")
+	algorithm, err := ResolveAlterTableAlgorithm(context.Background(),
+		[]tree.AlterTableOption{defaultOption}, &plan.TableDef{})
+	require.NoError(t, err)
+	require.Equal(t, plan.AlterTable_INPLACE, algorithm)
+
+	convertOption := tree.NewTableOptionCharsetConversion("utf8mb4")
+	algorithm, err = ResolveAlterTableAlgorithm(context.Background(),
+		[]tree.AlterTableOption{convertOption}, &plan.TableDef{})
+	require.NoError(t, err)
+	require.Equal(t, plan.AlterTable_COPY, algorithm)
+}
+
 func TestAlterTable1(t *testing.T) {
 	//sql := "ALTER TABLE t1 ADD (d TIMESTAMP, e INT not null);"
 	//sql := "ALTER TABLE t1 ADD d INT NOT NULL PRIMARY KEY;"

@@ -20,6 +20,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/matrixorigin/matrixone/pkg/common/collation"
 	"github.com/matrixorigin/matrixone/pkg/common/hashmap"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -1360,6 +1361,13 @@ func odkuValuesEqual(left, right *vector.Vector) bool {
 	}
 	if left.GetType().Oid != right.GetType().Oid {
 		return false
+	}
+	if left.GetType().Oid.IsMySQLString() &&
+		types.IsNative0900Collation(left.GetType().Charset) {
+		if left.GetType().Charset == types.CharsetUTF8MB40900AI {
+			return collation.UCA0900AICollate(left.GetBytesAt(0), right.GetBytesAt(0)) == 0
+		}
+		return collation.UCA0900BinCollate(left.GetBytesAt(0), right.GetBytesAt(0)) == 0
 	}
 
 	switch left.GetType().Oid {

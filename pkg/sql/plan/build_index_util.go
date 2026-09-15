@@ -170,6 +170,17 @@ func indexTableKeyTypeForSinglePart(col *ColDef, keyPart *tree.KeyPart) Type {
 	if col == nil {
 		return Type{}
 	}
+	if types.T(col.Typ.Id).IsMySQLString() &&
+		types.IsNative0900Collation(uint8(col.Typ.Charset)) {
+		// Native 0900 keys are opaque comparison weights. Keep the source
+		// column's value in the base table, but make the hidden index column
+		// binary so storage and hash consumers never apply the transform twice.
+		return Type{
+			Id:      int32(types.T_varbinary),
+			Width:   types.MaxVarBinaryLen,
+			Charset: uint32(types.CharsetBinary),
+		}
+	}
 	if keyPart != nil && keyPart.Length > 0 {
 		if prefixType, ok := indexTableKeyTypeForPrefix(col.Typ); ok {
 			return prefixType
@@ -187,6 +198,49 @@ func indexTableKeyTypeForSinglePart(col *ColDef, keyPart *tree.KeyPart) Type {
 		Scale:      col.Typ.Scale,
 		Enumvalues: col.Typ.Enumvalues,
 		Charset:    col.Typ.Charset,
+	}
+}
+
+func hasNative0900KeyParts(colMap map[string]*ColDef, parts []*tree.KeyPart) bool {
+	for _, part := range parts {
+		if part == nil || part.ColName == nil {
+			continue
+		}
+		col, ok := colMap[part.ColName.ColName()]
+		if ok && types.T(col.Typ.Id).IsMySQLString() &&
+			types.IsNative0900Collation(uint8(col.Typ.Charset)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNative0900Columns(colMap map[string]*ColDef, names []string) bool {
+	for _, name := range names {
+		col, ok := colMap[name]
+		if ok && types.T(col.Typ.Id).IsMySQLString() &&
+			types.IsNative0900Collation(uint8(col.Typ.Charset)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isNative0900Type(typ Type) bool {
+	return types.T(typ.Id).IsMySQLString() &&
+		types.IsNative0900Collation(uint8(typ.Charset))
+}
+
+func setPhysicalKeyFormat(tableDef *TableDef, indexDef *IndexDef, native0900 bool) {
+	if !native0900 {
+		return
+	}
+	format := uint32(types.PADSpaceKeyV1)
+	if tableDef != nil {
+		tableDef.KeyFormat = format
+	}
+	if indexDef != nil {
+		indexDef.KeyFormat = format
 	}
 }
 

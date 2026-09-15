@@ -1046,6 +1046,7 @@ func getTableDef(tblItem *TableItem, coldefs []engine.TableDef) (*plan.TableDef,
 		AutoIncrOffset: tblItem.ExtraInfo.GetAutoIncrOffset(),
 		AutoIncrEpoch:  tblItem.ExtraInfo.GetAutoIncrEpoch(),
 		DefaultCharset: tblItem.ExtraInfo.GetDefaultCharset(),
+		KeyFormat:      tblItem.ExtraInfo.GetKeyFormat(),
 		Checks:         tblItem.ExtraInfo.GetChecks(),
 		LogicalId:      tblItem.LogicalId,
 	}, tableDef

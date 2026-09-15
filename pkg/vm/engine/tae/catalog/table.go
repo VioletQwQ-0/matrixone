@@ -944,6 +944,7 @@ func (entry *TableEntry) AlterTable(ctx context.Context, txn txnif.TxnReader, re
 			AutoIncrOffset:    newSchema.Extra.AutoIncrOffset,
 			AutoIncrEpoch:     newSchema.Extra.AutoIncrEpoch,
 			DefaultCharset:    newSchema.Extra.DefaultCharset,
+			KeyFormat:         newSchema.Extra.KeyFormat,
 			Checks:            checks,
 		}
 

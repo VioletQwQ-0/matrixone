@@ -2099,6 +2099,12 @@ func validateRemoteExpressionPipelineProtocol(
 			"collation key expressions require MORPC protocol version 68",
 		)
 	}
+	if features.NativeCollationV1 &&
+		(!hasProtocolVersion || protocolVersion < defines.MORPCVersionNativeCollation) {
+		return moerr.NewNotSupportedNoCtx(
+			"native utf8mb4_0900 semantics require the durable cluster rollout gate",
+		)
+	}
 	return nil
 }
 
@@ -2531,8 +2537,8 @@ func aggregateUsesCollationAwareTextMinMax(agg aggexec.AggFuncExecExpression) bo
 	}
 	args := agg.GetArgExpressions()
 	if len(args) == 0 || args[0] == nil ||
-		(args[0].Typ.Charset != uint32(types.CharsetUTF8) &&
-			args[0].Typ.Charset != uint32(types.CharsetUTF8MB4Bin)) {
+		(!types.IsTextCollation(uint8(args[0].Typ.Charset)) ||
+			args[0].Typ.Charset == uint32(types.CharsetLegacy)) {
 		return false
 	}
 	switch types.T(args[0].Typ.Id) {

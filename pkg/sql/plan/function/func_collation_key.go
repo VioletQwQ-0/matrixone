@@ -40,7 +40,7 @@ func internalCollationKey(parameters []*vector.Vector, result vector.FunctionRes
 		return moerr.NewInvalidInput(proc.Ctx, "collation key requires a string operand")
 	}
 	charset := vector.GetFixedAtNoTypeCheck[uint64](parameters[1], 0)
-	if charset > uint64(types.CharsetUTF8) {
+	if charset > uint64(types.CharsetUTF8MB40900Bin) {
 		return moerr.NewInvalidInput(proc.Ctx, "unsupported collation key charset")
 	}
 	// Resolve against text: the target domain is explicit even when a prepared

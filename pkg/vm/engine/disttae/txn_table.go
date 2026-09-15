@@ -1734,6 +1734,7 @@ func (tbl *txnTable) GetTableDef(ctx context.Context) *plan.TableDef {
 			tbl.tableDef.AutoIncrEpoch = tbl.extraInfo.AutoIncrEpoch
 			tbl.tableDef.Checks = tbl.extraInfo.Checks
 			tbl.tableDef.DefaultCharset = tbl.extraInfo.DefaultCharset
+			tbl.tableDef.KeyFormat = tbl.extraInfo.KeyFormat
 		}
 	}
 	return tbl.tableDef

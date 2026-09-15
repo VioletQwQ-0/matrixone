@@ -623,6 +623,7 @@ func DeepCopyIndexDef(indexDef *plan.IndexDef) *plan.IndexDef {
 		IndexAlgoParams:    indexDef.IndexAlgoParams,
 		Parts:              slices.Clone(indexDef.Parts),
 		IncludedColumns:    slices.Clone(indexDef.IncludedColumns),
+		KeyFormat:          indexDef.KeyFormat,
 	}
 	newindexDef.Option = DeepCopyIndexOption(indexDef.Option)
 	return newindexDef
@@ -726,6 +727,7 @@ func DeepCopyTableDef(table *plan.TableDef, withCols bool) *plan.TableDef {
 		AutoIncrOffset: table.AutoIncrOffset,
 		AutoIncrEpoch:  table.AutoIncrEpoch,
 		DefaultCharset: table.DefaultCharset,
+		KeyFormat:      table.KeyFormat,
 		DbName:         table.DbName,
 		DbId:           table.DbId,
 		FeatureFlag:    table.FeatureFlag,
@@ -1266,6 +1268,7 @@ func DeepCopyExpr(expr *Expr) *Expr {
 				AggConfig:          bytes.Clone(item.F.AggConfig),
 				AggConfigType:      item.F.AggConfigType,
 				SyntaxExplicitCast: item.F.SyntaxExplicitCast,
+				ExplicitCollation:  item.F.ExplicitCollation,
 			},
 		}
 

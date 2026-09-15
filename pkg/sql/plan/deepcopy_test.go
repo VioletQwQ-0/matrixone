@@ -37,7 +37,7 @@ func TestCloneTableDefForPlan(t *testing.T) {
 
 	colA := &planpb.ColDef{Name: "a"}
 	colB := &planpb.ColDef{Name: "b"}
-	index := &planpb.IndexDef{IndexName: "idx_a"}
+	index := &planpb.IndexDef{IndexName: "idx_a", KeyFormat: uint32(types.PADSpaceKeyV1)}
 	pkey := &planpb.PrimaryKeyDef{PkeyColName: "a"}
 	source := &planpb.TableDef{
 		Name:          "source",
@@ -45,6 +45,7 @@ func TestCloneTableDefForPlan(t *testing.T) {
 		Indexes:       []*planpb.IndexDef{index},
 		Pkey:          pkey,
 		Name2ColIndex: map[string]int32{"a": 0, "b": 1},
+		KeyFormat:     uint32(types.PADSpaceKeyV1),
 	}
 
 	cloned := CloneTableDefForPlan(source, true)

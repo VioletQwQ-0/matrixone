@@ -977,6 +977,10 @@ func builtInInternalCharacterSet(parameters []*vector.Vector, result vector.Func
 					identity = 1
 				case types.CharsetUTF8:
 					identity = 3
+				case types.CharsetUTF8MB40900AI:
+					identity = 4
+				case types.CharsetUTF8MB40900Bin:
+					identity = 5
 				}
 				if err := rs.Append(identity, false); err != nil {
 					return err
@@ -2823,6 +2827,9 @@ func builtInUnixTimestampVarcharToDecimal128(parameters []*vector.Vector, result
 
 // XXX I just copy this function.
 func builtInHash(parameters []*vector.Vector, result vector.FunctionResultWrapper, proc *process.Process, length int, selectList *FunctionSelectList) error {
+	if err := validateHashCollationValues(parameters, length); err != nil {
+		return err
+	}
 	fillStringGroupStr := func(keys [][]byte, vec *vector.Vector, n int, start int) {
 		if vec.IsConst() {
 			area := vec.GetArea()
@@ -2835,7 +2842,7 @@ func builtInHash(parameters []*vector.Vector, result vector.FunctionResultWrappe
 			} else {
 				for i := 0; i < n; i++ {
 					keys[i] = append(keys[i], byte(0))
-					keys[i] = append(keys[i], data...)
+					keys[i] = append(keys[i], canonicalHashTextValue(*vec.GetType(), data)...)
 				}
 			}
 		} else {
@@ -2844,7 +2851,7 @@ func builtInHash(parameters []*vector.Vector, result vector.FunctionResultWrappe
 			if !vec.GetNulls().Any() {
 				for i := 0; i < n; i++ {
 					keys[i] = append(keys[i], byte(0))
-					keys[i] = append(keys[i], vs[i+start].GetByteSlice(area)...)
+					keys[i] = append(keys[i], canonicalHashTextValue(*vec.GetType(), vs[i+start].GetByteSlice(area))...)
 				}
 			} else {
 				nsp := vec.GetNulls()
@@ -2854,7 +2861,7 @@ func builtInHash(parameters []*vector.Vector, result vector.FunctionResultWrappe
 						keys[i] = append(keys[i], byte(1))
 					} else {
 						keys[i] = append(keys[i], byte(0))
-						keys[i] = append(keys[i], vs[i+start].GetByteSlice(area)...)
+						keys[i] = append(keys[i], canonicalHashTextValue(*vec.GetType(), vs[i+start].GetByteSlice(area))...)
 					}
 				}
 			}
@@ -2936,6 +2943,9 @@ func builtInHash(parameters []*vector.Vector, result vector.FunctionResultWrappe
 
 // builtInHashPartition mirrors builtInHash but returns uint64 so downstream modulo results are non-negative.
 func builtInHashPartition(parameters []*vector.Vector, result vector.FunctionResultWrapper, proc *process.Process, length int, selectList *FunctionSelectList) error {
+	if err := validateHashCollationValues(parameters, length); err != nil {
+		return err
+	}
 	fillStringGroupStr := func(keys [][]byte, vec *vector.Vector, n int, start int) {
 		if vec.IsConst() {
 			area := vec.GetArea()
@@ -2948,7 +2958,7 @@ func builtInHashPartition(parameters []*vector.Vector, result vector.FunctionRes
 			} else {
 				for i := 0; i < n; i++ {
 					keys[i] = append(keys[i], byte(0))
-					keys[i] = append(keys[i], data...)
+					keys[i] = append(keys[i], canonicalHashTextValue(*vec.GetType(), data)...)
 				}
 			}
 		} else {
@@ -2957,7 +2967,7 @@ func builtInHashPartition(parameters []*vector.Vector, result vector.FunctionRes
 			if !vec.GetNulls().Any() {
 				for i := 0; i < n; i++ {
 					keys[i] = append(keys[i], byte(0))
-					keys[i] = append(keys[i], vs[i+start].GetByteSlice(area)...)
+					keys[i] = append(keys[i], canonicalHashTextValue(*vec.GetType(), vs[i+start].GetByteSlice(area))...)
 				}
 			} else {
 				nsp := vec.GetNulls()
@@ -2967,7 +2977,7 @@ func builtInHashPartition(parameters []*vector.Vector, result vector.FunctionRes
 						keys[i] = append(keys[i], byte(1))
 					} else {
 						keys[i] = append(keys[i], byte(0))
-						keys[i] = append(keys[i], vs[i+start].GetByteSlice(area)...)
+						keys[i] = append(keys[i], canonicalHashTextValue(*vec.GetType(), vs[i+start].GetByteSlice(area))...)
 					}
 				}
 			}
@@ -3046,6 +3056,50 @@ func builtInHashPartition(parameters []*vector.Vector, result vector.FunctionRes
 	return nil
 }
 
+// validateHashCollationValues admits transformed string values before the hash
+// encoder starts appending bytes. Hash and hash_partition must reject malformed
+// UTF-8 consistently with comparison keys; silently hashing the original bytes
+// would let two operators use different identities for the same row.
+func validateHashCollationValues(parameters []*vector.Vector, length int) error {
+	for _, vec := range parameters {
+		if vec == nil || !vec.GetType().Oid.IsMySQLString() {
+			continue
+		}
+		part, err := types.ResolveStringKeyPart(*vec.GetType(), types.PADSpaceKeyV1)
+		if err != nil {
+			return err
+		}
+		if !part.Transformed() || vec.IsConstNull() {
+			continue
+		}
+		for row := 0; row < length; row++ {
+			valueRow := row
+			if vec.IsConst() {
+				valueRow = 0
+			}
+			if vec.IsNull(uint64(valueRow)) {
+				continue
+			}
+			if _, err := part.Key(nil, vec.GetBytesAt(valueRow)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func canonicalHashTextValue(typ types.Type, value []byte) []byte {
+	part, err := types.ResolveStringKeyPart(typ, types.PADSpaceKeyV1)
+	if err != nil || !part.Transformed() {
+		return value
+	}
+	key, err := part.Key(nil, value)
+	if err != nil {
+		return value
+	}
+	return key
+}
+
 // BuiltInSerial have a similar function named SerialWithCompacted in the index_util
 // Serial func is used by users, the function make true when input vec have ten
 // rows, the output vec is ten rows, when the vectors have null value, the output
@@ -3056,6 +3110,9 @@ func builtInHashPartition(parameters []*vector.Vector, result vector.FunctionRes
 func (op *opSerial) BuiltInSerial(parameters []*vector.Vector, result vector.FunctionResultWrapper, proc *process.Process, length int, selectList *FunctionSelectList) error {
 	rs := vector.MustFunctionResult[types.Varlena](result)
 	var err error
+	if err = validateNativeSerialParams(parameters, length); err != nil {
+		return err
+	}
 
 	bitMap := new(nulls.Nulls)
 	for _, v := range parameters {
@@ -3110,6 +3167,9 @@ func (op *opSerial) BuiltInSerialFull(parameters []*vector.Vector, result vector
 	rs := vector.MustFunctionResult[types.Varlena](result)
 
 	var err error
+	if err = validateNativeSerialParams(parameters, length); err != nil {
+		return err
+	}
 	if len(op.funcs) == 0 {
 		op.funcs = make([]func(v *vector.Vector, idx int, ps *types.Packer), len(parameters))
 		for i, p := range parameters {
@@ -3138,7 +3198,43 @@ func (op *opSerial) BuiltInSerialFull(parameters []*vector.Vector, result vector
 	return nil
 }
 
+func validateNativeSerialParams(parameters []*vector.Vector, length int) error {
+	for _, v := range parameters {
+		if v == nil || !v.GetType().Oid.IsMySQLString() ||
+			!types.IsNative0900Collation(v.GetType().Charset) {
+			continue
+		}
+		part, err := types.ResolveStringKeyPart(*v.GetType(), types.PADSpaceKeyV1)
+		if err != nil {
+			return err
+		}
+		for row := 0; row < length; row++ {
+			if v.IsNull(uint64(row)) {
+				continue
+			}
+			if _, err = part.Key(nil, v.GetBytesAt(row)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func getPackFun(v *vector.Vector) (func(v *vector.Vector, idx int, ps *types.Packer), error) {
+	if v.GetType().Oid.IsMySQLString() && types.IsNative0900Collation(v.GetType().Charset) {
+		part, err := types.ResolveStringKeyPart(*v.GetType(), types.PADSpaceKeyV1)
+		if err != nil {
+			return nil, err
+		}
+		var scratch []byte
+		return func(v *vector.Vector, idx int, ps *types.Packer) {
+			key, _ := part.Key(scratch, v.GetBytesAt(idx))
+			ps.EncodeStringType(key)
+			if v.GetType().Charset == types.CharsetUTF8MB40900AI {
+				scratch = key[:0]
+			}
+		}, nil
+	}
 	switch v.GetType().Oid {
 	case types.T_bool:
 		return func(v *vector.Vector, idx int, ps *types.Packer) {
@@ -3263,6 +3359,52 @@ func getPackFun(v *vector.Vector) (func(v *vector.Vector, idx int, ps *types.Pac
 // To use it inside builtInSerial, pass the bitMap pointer and set isFull false
 // To use it inside BuiltInSerialFull, pass the bitMap as nil and set isFull to true
 func SerialHelper(v *vector.Vector, bitMap *nulls.Nulls, ps []*types.Packer, isFull bool) {
+	_ = SerialHelperWithError(v, bitMap, ps, isFull)
+}
+
+// SerialHelperWithError is the checked variant used by storage and hash
+// producers. Native 0900 text is encoded as an opaque comparison key before
+// the regular tuple framing; legacy text keeps the historical path.
+func SerialHelperWithError(v *vector.Vector, bitMap *nulls.Nulls, ps []*types.Packer, isFull bool) error {
+	if !isFull && bitMap == nil {
+		panic("for SerialHelperWithError(), bitmap should not be nil")
+	}
+	if v.GetType().Oid.IsMySQLString() &&
+		types.IsNative0900Collation(v.GetType().Charset) {
+		part, err := types.ResolveStringKeyPart(*v.GetType(), types.PADSpaceKeyV1)
+		if err != nil {
+			return err
+		}
+		values, area := vector.MustVarlenaRawData(v)
+		var scratch []byte
+		for i := range values {
+			if v.IsNull(uint64(i)) {
+				if isFull {
+					ps[i].EncodeNull()
+				} else {
+					nulls.Add(bitMap, uint64(i))
+				}
+				continue
+			}
+			key, err := part.Key(scratch, values[i].GetByteSlice(area))
+			if err != nil {
+				return err
+			}
+			ps[i].EncodeStringType(key)
+			if err := ps[i].Err(); err != nil {
+				return err
+			}
+			if v.GetType().Charset == types.CharsetUTF8MB40900AI {
+				scratch = key[:0]
+			}
+		}
+		return nil
+	}
+	serialHelperRaw(v, bitMap, ps, isFull)
+	return nil
+}
+
+func serialHelperRaw(v *vector.Vector, bitMap *nulls.Nulls, ps []*types.Packer, isFull bool) {
 
 	if !isFull && bitMap == nil {
 		// if you are using it inside the builtInSerial then, you should pass bitMap

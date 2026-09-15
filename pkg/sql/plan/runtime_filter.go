@@ -191,6 +191,15 @@ func (builder *QueryBuilder) exactRuntimeFilterPlanEncoding(
 	probeType, buildType types.Type,
 	matchPrefix bool,
 ) (keycodec.ExactRuntimeFilterEncoding, bool) {
+	// A raw runtime-filter payload has no collation metadata. Visible native
+	// 0900 text therefore cannot use the legacy raw contract: bytewise Bloom/IN
+	// probes would disagree with UCA equality and could discard matching rows.
+	// Physical opaque keys (varbinary/binary metadata) remain eligible because
+	// their producer already materialized the schema-resolved key.
+	if (probeType.Oid.IsMySQLString() && types.IsNative0900Collation(probeType.Charset)) ||
+		(buildType.Oid.IsMySQLString() && types.IsNative0900Collation(buildType.Charset)) {
+		return keycodec.ExactRuntimeFilterUnsupported, false
+	}
 	encoding := keycodec.ExactRuntimeFilterEncodingForPair(probeType, buildType)
 	if encoding == keycodec.ExactRuntimeFilterUnsupported {
 		return encoding, false

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/matrixorigin/matrixone/pkg/common/collation"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -200,6 +201,43 @@ func TestTextMinMaxUTF8mb4BinUsesPadSpace(t *testing.T) {
 			require.Len(t, results, 1)
 			defer results[0].Free(mp)
 			require.Equal(t, tc.expect, results[0].GetBytesAt(0))
+		})
+	}
+}
+
+func TestTextMinMaxNative0900UsesNativeRelations(t *testing.T) {
+	values := [][]byte{[]byte("z"), []byte("Å"), []byte("a"), []byte("😀")}
+	for _, tc := range []struct {
+		name    string
+		charset uint8
+		compare func([]byte, []byte) int
+	}{
+		{name: "ai", charset: types.CharsetUTF8MB40900AI, compare: collation.UCA0900AICollate},
+		{name: "bin", charset: types.CharsetUTF8MB40900Bin, compare: collation.UCA0900BinCollate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mp := mpool.MustNewZero()
+			typ := types.NewWithCharset(types.T_varchar, 32, 0, tc.charset)
+			vec := vector.NewVec(typ)
+			for _, value := range values {
+				require.NoError(t, vector.AppendBytes(vec, value, false, mp))
+			}
+			agg := makeMinMaxExec(mp, AggIdOfMin, true, typ)
+			require.NoError(t, agg.GroupGrow(1))
+			require.NoError(t, agg.BulkFill(0, []*vector.Vector{vec}))
+			result, err := agg.Flush()
+			require.NoError(t, err)
+			want := values[0]
+			for _, value := range values[1:] {
+				if tc.compare(value, want) < 0 {
+					want = value
+				}
+			}
+			require.Equal(t, want, result[0].GetBytesAt(0))
+			result[0].Free(mp)
+			agg.Free()
+			vec.Free(mp)
+			require.Zero(t, mp.CurrNB())
 		})
 	}
 }

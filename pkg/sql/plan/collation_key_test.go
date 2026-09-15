@@ -15,12 +15,16 @@
 package plan
 
 import (
+	"context"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/container/batch"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	pb "github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
+	"github.com/matrixorigin/matrixone/pkg/sql/parsers"
+	"github.com/matrixorigin/matrixone/pkg/sql/parsers/dialect"
+	"github.com/matrixorigin/matrixone/pkg/sql/parsers/tree"
 	"github.com/matrixorigin/matrixone/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -61,4 +65,141 @@ func TestCollationProbeExpressionMatchesStoredTuple(t *testing.T) {
 		require.NoError(t, err)
 		require.Same(t, input, legacy)
 	}
+}
+
+func TestNative0900ComparisonPromotesUntypedLiteralToComparisonKey(t *testing.T) {
+	ctx := NewMockCompilerContext(true)
+	nativeType := pb.Type{
+		Id:      int32(types.T_varchar),
+		Width:   types.MaxVarcharLen,
+		Charset: uint32(types.CharsetUTF8MB40900AI),
+	}
+	column := &pb.Expr{
+		Typ:  nativeType,
+		Expr: &pb.Expr_Col{Col: &pb.ColRef{RelPos: 1, ColPos: 0, Name: "name"}},
+	}
+	literal := makePlan2StringConstExprWithType("Alpha")
+	comparison, err := BindFuncExprImplByPlanExpr(ctx.GetContext(), "=", []*pb.Expr{column, literal})
+	require.NoError(t, err)
+	require.NotNil(t, comparison.GetF())
+	require.Len(t, comparison.GetF().Args, 2)
+	for _, arg := range comparison.GetF().Args {
+		require.NotNil(t, arg.GetF(), "both operands must use the native comparison identity: %#v", arg)
+		require.Equal(t, "internal_collation_key", arg.GetF().Func.ObjName)
+	}
+}
+
+func TestExplicitNative0900CollateSetsExpressionIdentity(t *testing.T) {
+	stmt, err := parsers.ParseOne(context.Background(), dialect.MYSQL,
+		"select 'Alpha' collate utf8mb4_0900_ai_ci", 1)
+	require.NoError(t, err)
+	defer stmt.Free()
+	selectStmt := stmt.(*tree.Select)
+	selectClause := selectStmt.Select.(*tree.SelectClause)
+	binder := NewDefaultBinder(context.Background(), nil, nil, pb.Type{}, nil)
+	bound, err := binder.BindExpr(selectClause.Exprs[0].Expr, 0, false)
+	require.NoError(t, err)
+	require.Equal(t, uint32(types.CharsetUTF8MB40900AI), bound.Typ.Charset)
+	require.Equal(t, int32(types.T_varchar), bound.Typ.Id)
+	require.NotNil(t, bound.GetF())
+	require.True(t, bound.GetF().ExplicitCollation)
+
+	serialized, err := bound.Marshal()
+	require.NoError(t, err)
+	var restored pb.Expr
+	require.NoError(t, restored.Unmarshal(serialized))
+	require.True(t, restored.GetF().ExplicitCollation)
+}
+
+func TestExplicitCollationWinsOverColumnIdentity(t *testing.T) {
+	stmt, err := parsers.ParseOne(context.Background(), dialect.MYSQL,
+		"select 'Alpha' collate utf8mb4_0900_ai_ci", 1)
+	require.NoError(t, err)
+	defer stmt.Free()
+	selectStmt := stmt.(*tree.Select)
+	binder := NewDefaultBinder(context.Background(), nil, nil, pb.Type{}, nil)
+	explicit, err := binder.BindExpr(selectStmt.Select.(*tree.SelectClause).Exprs[0].Expr, 0, false)
+	require.NoError(t, err)
+	column := &pb.Expr{
+		Typ:  pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB4Bin)},
+		Expr: &pb.Expr_Col{Col: &pb.ColRef{RelPos: 1, ColPos: 0, Name: "name"}},
+	}
+	comparison, err := BindFuncExprImplByPlanExpr(context.Background(), "=", []*pb.Expr{explicit, column})
+	require.NoError(t, err)
+	require.Len(t, comparison.GetF().Args, 2)
+	for _, arg := range comparison.GetF().Args {
+		require.Equal(t, "internal_collation_key", arg.GetF().Func.ObjName)
+	}
+	require.Equal(t, uint32(types.CharsetUTF8MB40900AI), comparison.GetF().Args[1].GetF().Args[0].Typ.Charset)
+}
+
+func TestExplicitCollationWinsOverColumnIdentityInList(t *testing.T) {
+	stmt, err := parsers.ParseOne(context.Background(), dialect.MYSQL,
+		"select 'Alpha' collate utf8mb4_0900_ai_ci", 1)
+	require.NoError(t, err)
+	defer stmt.Free()
+	selectStmt := stmt.(*tree.Select)
+	binder := NewDefaultBinder(context.Background(), nil, nil, pb.Type{}, nil)
+	explicit, err := binder.BindExpr(selectStmt.Select.(*tree.SelectClause).Exprs[0].Expr, 0, false)
+	require.NoError(t, err)
+	nativeType := pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB40900AI)}
+	left := &pb.Expr{
+		Typ:  pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB4Bin)},
+		Expr: &pb.Expr_Col{Col: &pb.ColRef{RelPos: 1, ColPos: 0, Name: "name"}},
+	}
+	second := makePlan2StringConstExprWithType("Beta")
+	second.Typ = nativeType
+	right := &pb.Expr{
+		Typ:  nativeType,
+		Expr: &pb.Expr_List{List: &pb.ExprList{List: []*pb.Expr{explicit, second}}},
+	}
+	bound, err := BindFuncExprImplByPlanExpr(context.Background(), "in", []*pb.Expr{left, right})
+	require.NoError(t, err)
+	require.True(t, exprContainsFuncName(bound, "internal_collation_key"))
+}
+
+func TestConflictingExplicitCollationsAreRejected(t *testing.T) {
+	bind := func(sql string) *pb.Expr {
+		stmt, err := parsers.ParseOne(context.Background(), dialect.MYSQL, sql, 1)
+		require.NoError(t, err)
+		defer stmt.Free()
+		selectStmt := stmt.(*tree.Select)
+		binder := NewDefaultBinder(context.Background(), nil, nil, pb.Type{}, nil)
+		expr, err := binder.BindExpr(selectStmt.Select.(*tree.SelectClause).Exprs[0].Expr, 0, false)
+		require.NoError(t, err)
+		return expr
+	}
+	left := bind("select 'a' collate utf8mb4_0900_ai_ci")
+	right := bind("select 'a' collate utf8mb4_0900_bin")
+	_, err := BindFuncExprImplByPlanExpr(context.Background(), "=", []*pb.Expr{left, right})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "illegal mix of collations")
+}
+
+func TestExplicitCollationWinsAfterLowerPriorityConflict(t *testing.T) {
+	bind := func(sql string) *pb.Expr {
+		stmt, err := parsers.ParseOne(context.Background(), dialect.MYSQL, sql, 1)
+		require.NoError(t, err)
+		defer stmt.Free()
+		selectStmt := stmt.(*tree.Select)
+		binder := NewDefaultBinder(context.Background(), nil, nil, pb.Type{}, nil)
+		expr, err := binder.BindExpr(selectStmt.Select.(*tree.SelectClause).Exprs[0].Expr, 0, false)
+		require.NoError(t, err)
+		return expr
+	}
+	legacyColumn := &pb.Expr{
+		Typ:  pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8)},
+		Expr: &pb.Expr_Col{Col: &pb.ColRef{RelPos: 1, ColPos: 0, Name: "left_name"}},
+	}
+	nativeColumn := &pb.Expr{
+		Typ:  pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB40900AI)},
+		Expr: &pb.Expr_Col{Col: &pb.ColRef{RelPos: 2, ColPos: 0, Name: "right_name"}},
+	}
+	explicit := bind("select 'a' collate utf8mb4_0900_ai_ci")
+	// The first two operands have equal, weaker coercibility but different
+	// collations. The later explicit operand must win before that tie is merged.
+	err := normalizeCollationCoercibilityArgs(context.Background(), "=",
+		[]*pb.Expr{legacyColumn, nativeColumn, explicit})
+	require.NoError(t, err)
+	require.Equal(t, uint32(types.CharsetUTF8MB40900AI), legacyColumn.Typ.Charset)
 }

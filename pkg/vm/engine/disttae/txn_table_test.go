@@ -173,11 +173,13 @@ func TestTxnTableGetTableDefRestoresDefaultCharset(t *testing.T) {
 		db: &txnDatabase{},
 		extraInfo: &api.SchemaExtra{
 			DefaultCharset: uint32(types.CharsetUTF8MB4Bin),
+			KeyFormat:      uint32(types.PADSpaceKeyV1),
 		},
 	}
 	tableDef := table.GetTableDef(context.Background())
 	require.NotNil(t, tableDef)
 	require.Equal(t, uint32(types.CharsetUTF8MB4Bin), tableDef.DefaultCharset)
+	require.Equal(t, uint32(types.PADSpaceKeyV1), tableDef.KeyFormat)
 }
 
 func makeBatchForTest(

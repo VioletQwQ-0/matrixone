@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/matrixorigin/matrixone/pkg/common/collation"
 	"github.com/stretchr/testify/require"
 )
 
@@ -86,6 +87,49 @@ func TestCollationTupleLegacyAndBinary(t *testing.T) {
 	require.Error(t, err)
 	_, err = ResolveStringKeyPart(T_int64.ToType(), PADSpaceKeyV1)
 	require.Error(t, err)
+}
+
+func TestNative0900TupleKeysAreOpaqueAndNoPad(t *testing.T) {
+	for _, charset := range []uint8{CharsetUTF8MB40900AI, CharsetUTF8MB40900Bin} {
+		part, err := ResolveStringKeyPart(NewWithCharset(T_varchar, 0, 0, charset), PADSpaceKeyV1)
+		require.NoError(t, err)
+		require.True(t, part.Transformed())
+
+		alpha, err := part.Key(nil, []byte("Alpha"))
+		require.NoError(t, err)
+		trailing, err := part.Key(nil, []byte("Alpha "))
+		require.NoError(t, err)
+		if charset == CharsetUTF8MB40900AI {
+			caseInsensitive, err := part.Key(nil, []byte("alpha"))
+			require.NoError(t, err)
+			require.Equal(t, alpha, caseInsensitive)
+		} else {
+			require.NotEqual(t, alpha, trailing)
+			require.NotEqual(t, alpha, mustKey(t, part, []byte("alpha")))
+		}
+		require.NotEqual(t, alpha, trailing, "native 0900 keys use NO PAD semantics")
+
+		p := NewPacker()
+		_, err = part.Encode(p, nil, []byte("Alpha"))
+		require.NoError(t, err)
+		decoded, consumed, err := part.Decode(p.GetBuf())
+		require.NoError(t, err)
+		require.Equal(t, len(p.GetBuf()), consumed)
+		require.True(t, decoded.Opaque)
+		require.Equal(t, alpha, decoded.Bytes)
+		p.Close()
+	}
+	binPart, err := ResolveStringKeyPart(NewWithCharset(T_varchar, 0, 0, CharsetUTF8MB40900Bin), PADSpaceKeyV1)
+	require.NoError(t, err)
+	_, err = binPart.Key(nil, []byte{0xff})
+	require.ErrorIs(t, err, collation.ErrUTF8)
+}
+
+func mustKey(t *testing.T, part StringKeyPart, value []byte) []byte {
+	t.Helper()
+	key, err := part.Key(nil, value)
+	require.NoError(t, err)
+	return key
 }
 
 func TestCollationTupleCapacityAndMalformed(t *testing.T) {

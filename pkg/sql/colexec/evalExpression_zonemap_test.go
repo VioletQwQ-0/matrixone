@@ -202,6 +202,41 @@ func TestEvaluateFilterByZoneMapNullableInVecIsConservative(t *testing.T) {
 	require.True(t, selected, plan2.FormatExpr(expr, plan2.FormatOption{}))
 }
 
+func TestNative0900CollationKeySkipsRawZoneMapPruning(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	defer proc.Free()
+
+	typ := plan.Type{
+		Id:      int32(types.T_varchar),
+		Width:   16,
+		Charset: uint32(types.CharsetUTF8MB40900AI),
+	}
+	column := &plan.Expr{
+		Typ: typ,
+		Expr: &plan.Expr_Col{Col: &plan.ColRef{
+			RelPos: 0,
+			ColPos: 0,
+			Name:   "name",
+		}},
+	}
+	literal := plan2.MakePlan2StringConstExprWithType("Alpha")
+	literal.Typ = typ
+	columnKey, err := plan2.MakeCollationKeyExpr(proc.Ctx, column, typ, types.PADSpaceKeyV1)
+	require.NoError(t, err)
+	literalKey, err := plan2.MakeCollationKeyExpr(proc.Ctx, literal, typ, types.PADSpaceKeyV1)
+	require.NoError(t, err)
+	expr, err := plan2.BindFuncExprImplByPlanExpr(proc.Ctx, "=", []*plan.Expr{columnKey, literalKey})
+	require.NoError(t, err)
+
+	// The block zonemap is for the visible string column.  It must not be
+	// compared with an opaque UCA weight key; a residual scan is required.
+	zms, vecs := makeZoneMapEvalScratch(expr)
+	selected := colexec.EvaluateFilterByZoneMap(
+		proc.Ctx, proc, expr, makeVarcharBlockMeta("zzz"), map[int]int{0: 0}, zms, vecs,
+	)
+	require.True(t, selected, plan2.FormatExpr(expr, plan2.FormatOption{}))
+}
+
 func TestFoldedNullableInExprKeepsMatchAndNullsMiss(t *testing.T) {
 	proc := testutil.NewProcess(t)
 	ctx := proc.Ctx

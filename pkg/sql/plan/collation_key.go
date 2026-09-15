@@ -60,3 +60,11 @@ func MakeCollationKeyExpr(ctx context.Context, input *pb.Expr, effectiveType pb.
 	}
 	return BindFuncExprImplByPlanExpr(ctx, "internal_collation_key", []*pb.Expr{input, makePlan2Uint64ConstExprWithType(uint64(effectiveType.Charset))})
 }
+
+func makeNativeCollationKeyExpr(ctx context.Context, input *pb.Expr, effectiveType pb.Type) (*pb.Expr, error) {
+	if input == nil || !types.T(effectiveType.Id).IsMySQLString() ||
+		!types.IsNative0900Collation(uint8(effectiveType.Charset)) {
+		return input, nil
+	}
+	return MakeCollationKeyExpr(ctx, input, effectiveType, types.PADSpaceKeyV1)
+}

@@ -686,6 +686,12 @@ func makeMinMaxExecWithLegacyText(
 			param.Charset == types.CharsetLegacy {
 			return newStrMinMaxExec(mp, aggID, isMin, param)
 		}
+		if param.Charset == types.CharsetUTF8MB40900AI {
+			return newUTF8mb40900AIMinMaxExec(mp, aggID, isMin, param)
+		}
+		if param.Charset == types.CharsetUTF8MB40900Bin {
+			return newUTF8mb40900BinMinMaxExec(mp, aggID, isMin, param)
+		}
 		if param.Charset == types.CharsetUTF8MB4Bin {
 			return newUTF8mb4BinMinMaxExec(mp, aggID, isMin, param)
 		}

@@ -28,6 +28,8 @@ const (
 	Raw Domain = iota
 	UTF8MB4Bin
 	UTF8MB4GeneralCI
+	UTF8MB40900AI
+	UTF8MB40900Bin
 )
 
 var (
@@ -46,11 +48,17 @@ func (d Domain) Key(scratch, value []byte) ([]byte, error) {
 	if d == Raw {
 		return value, nil
 	}
-	if d != UTF8MB4Bin && d != UTF8MB4GeneralCI {
+	if d != UTF8MB4Bin && d != UTF8MB4GeneralCI && d != UTF8MB40900AI && d != UTF8MB40900Bin {
 		return nil, ErrDomain
 	}
 	if !utf8.Valid(value) {
 		return nil, ErrUTF8
+	}
+	if d == UTF8MB40900AI {
+		return UCA0900AIWeight(scratch[:0], value), nil
+	}
+	if d == UTF8MB40900Bin {
+		return value, nil
 	}
 	out := scratch[:0]
 	spaces := 0
@@ -99,8 +107,20 @@ func (d Domain) ValidateKey(key []byte) error {
 	if d == Raw {
 		return nil
 	}
-	if d != UTF8MB4Bin && d != UTF8MB4GeneralCI {
+	if d != UTF8MB4Bin && d != UTF8MB4GeneralCI && d != UTF8MB40900AI && d != UTF8MB40900Bin {
 		return ErrDomain
+	}
+	if d == UTF8MB40900Bin {
+		if !utf8.Valid(key) {
+			return ErrUTF8
+		}
+		return nil
+	}
+	if d == UTF8MB40900AI {
+		// UCA 9.0 weight strings are opaque, multi-level payloads. The tuple
+		// decoder validates framing and escaping; the schema-resolved domain
+		// supplies the only interpretation and does not attempt to reverse them.
+		return nil
 	}
 	space := byte(0)
 	for i := 0; i < len(key); {

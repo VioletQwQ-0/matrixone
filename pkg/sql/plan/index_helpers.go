@@ -16,6 +16,7 @@ package plan
 
 import (
 	"github.com/matrixorigin/matrixone/pkg/catalog"
+	"github.com/matrixorigin/matrixone/pkg/container/types"
 	planpb "github.com/matrixorigin/matrixone/pkg/pb/plan"
 )
 
@@ -57,4 +58,70 @@ func indexPrimaryPartName(idxDef *planpb.IndexDef) string {
 		return ""
 	}
 	return catalog.ResolveAlias(idxDef.Parts[0])
+}
+
+// indexOnlyHasOpaqueNativeValue reports whether an index-only plan would have
+// to expose a native-0900 key as a user value. Native keys are deliberately
+// irreversible: the index stores UCA weights (or the validated UTF-8 bytes
+// for 0900_bin), while the base table retains the original string. Returning
+// those bytes from an index-only scan would silently corrupt query results.
+// Such plans must backfill from the base table instead.
+func indexOnlyHasOpaqueNativeValue(idxDef *planpb.IndexDef, tableDef *planpb.TableDef) bool {
+	if idxDef == nil || tableDef == nil {
+		return false
+	}
+	for _, part := range idxDef.Parts {
+		col, ok := tableDef.Name2ColIndex[catalog.ResolveAlias(part)]
+		if !ok || col < 0 || int(col) >= len(tableDef.Cols) {
+			continue
+		}
+		if isNative0900PlanType(tableDef.Cols[col].Typ) {
+			return true
+		}
+	}
+	// A unique index-only scan may map the hidden index payload (the base
+	// table primary key) back to the visible primary-key column. A native
+	// string primary key uses an opaque hidden physical key, so that mapping
+	// also requires a base-table lookup.
+	if idxDef.Unique && tableDef.Pkey != nil {
+		for _, name := range tableDef.Pkey.Names {
+			col, ok := tableDef.Name2ColIndex[name]
+			if !ok || col < 0 || int(col) >= len(tableDef.Cols) {
+				continue
+			}
+			if isNative0900PlanType(tableDef.Cols[col].Typ) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func indexHasNative0900Parts(idxDef *planpb.IndexDef, tableDef *planpb.TableDef) bool {
+	if idxDef == nil || tableDef == nil {
+		return false
+	}
+	for _, part := range idxDef.Parts {
+		col, ok := tableDef.Name2ColIndex[catalog.ResolveAlias(part)]
+		if !ok || col < 0 || int(col) >= len(tableDef.Cols) {
+			continue
+		}
+		if isNative0900PlanType(tableDef.Cols[col].Typ) {
+			return true
+		}
+	}
+	return false
+}
+
+// indexPhysicalKeyFormatUsable fails closed for a native-0900 index whose
+// persisted metadata still says legacy. Such an index may contain raw text
+// from an older writer, while the current probe path produces opaque weights.
+func indexPhysicalKeyFormatUsable(idxDef *planpb.IndexDef, tableDef *planpb.TableDef) bool {
+	return !indexHasNative0900Parts(idxDef, tableDef) ||
+		idxDef.KeyFormat == uint32(types.PADSpaceKeyV1)
+}
+
+func isNative0900PlanType(typ planpb.Type) bool {
+	return types.T(typ.Id).IsMySQLString() &&
+		types.IsNative0900Collation(uint8(typ.Charset))
 }

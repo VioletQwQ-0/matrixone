@@ -17,6 +17,7 @@ package sort
 import (
 	"math/bits"
 
+	"github.com/matrixorigin/matrixone/pkg/common/collation"
 	"github.com/matrixorigin/matrixone/pkg/common/util"
 	"github.com/matrixorigin/matrixone/pkg/container/bytejson"
 	"github.com/matrixorigin/matrixone/pkg/container/nulls"
@@ -373,6 +374,38 @@ func sortByVector(
 			data []types.Varlena
 			area []byte
 		}{data: data, area: area}
+		if sqlOrder && types.IsNative0900Collation(vec.GetType().Charset) {
+			less := func(v struct {
+				data []types.Varlena
+				area []byte
+			}, i, j int64) bool {
+				left := v.data[i].GetByteSlice(v.area)
+				right := v.data[j].GetByteSlice(v.area)
+				cmp := collation.UCA0900BinCollate(left, right)
+				if vec.GetType().Charset == types.CharsetUTF8MB40900AI {
+					cmp = collation.UCA0900AICollate(left, right)
+				}
+				return cmp < 0
+			}
+			greater := func(v struct {
+				data []types.Varlena
+				area []byte
+			}, i, j int64) bool {
+				left := v.data[i].GetByteSlice(v.area)
+				right := v.data[j].GetByteSlice(v.area)
+				cmp := collation.UCA0900BinCollate(left, right)
+				if vec.GetType().Charset == types.CharsetUTF8MB40900AI {
+					cmp = collation.UCA0900AICollate(left, right)
+				}
+				return cmp > 0
+			}
+			if !desc {
+				genericSort(col, os, less)
+			} else {
+				genericSort(col, os, greater)
+			}
+			break
+		}
 		if !desc {
 			genericSort(col, os, varlenaLess)
 		} else {

@@ -74,6 +74,25 @@ func TestMySQL8045Oracle(t *testing.T) {
 			}
 		})
 	}
+	// The native UCA 9.0 key is the stage-A deliverable. Compare the fixed
+	// Vitess adapter against the independent MySQL 8.0.45 ordering corpus,
+	// rather than only comparing it with its own comparator.
+	domain := UTF8MB40900AI
+	keys := make([][]byte, len(oracle.Values))
+	for i, value := range oracle.Values {
+		keys[i], err = domain.Key(nil, []byte(value))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, left := range keys {
+		for j, right := range keys {
+			want := int(oracle.Order["utf8mb4_0900_ai_ci"][i*len(keys)+j]) - 1
+			if got := bytes.Compare(left, right); got != want {
+				t.Fatalf("0900 %q vs %q: got %d, MySQL %d", oracle.Values[i], oracle.Values[j], got, want)
+			}
+		}
+	}
 	// WEIGHT_STRING is an independent mapping oracle, not a variable-length
 	// PAD SPACE comparison key. Compare every valid BMP character plus 2,048
 	// supplementary samples in the exact order queried from the server.

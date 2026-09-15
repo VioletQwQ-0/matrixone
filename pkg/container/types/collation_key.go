@@ -58,6 +58,10 @@ func ResolveStringKeyPart(typ Type, format KeyFormat) (StringKeyPart, error) {
 		return StringKeyPart{domain: collation.UTF8MB4Bin}, nil
 	case CharsetUTF8:
 		return StringKeyPart{domain: collation.UTF8MB4GeneralCI}, nil
+	case CharsetUTF8MB40900AI:
+		return StringKeyPart{domain: collation.UTF8MB40900AI}, nil
+	case CharsetUTF8MB40900Bin:
+		return StringKeyPart{domain: collation.UTF8MB40900Bin}, nil
 	default:
 		return StringKeyPart{}, collation.ErrDomain
 	}

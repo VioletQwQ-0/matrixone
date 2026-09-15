@@ -3771,6 +3771,26 @@ var supportedStringBuiltIns = []FuncNew{
 					return PrefixEq
 				},
 			},
+			{
+				overloadId: 1,
+				args:       []types.T{types.T_varbinary, types.T_varbinary},
+				retType: func(parameters []types.Type) types.Type {
+					return types.T_bool.ToType()
+				},
+				newOp: func() executeLogicOfOverload {
+					return PrefixEq
+				},
+			},
+			{
+				overloadId: 2,
+				args:       []types.T{types.T_varbinary, types.T_varchar},
+				retType: func(parameters []types.Type) types.Type {
+					return types.T_bool.ToType()
+				},
+				newOp: func() executeLogicOfOverload {
+					return PrefixEq
+				},
+			},
 		},
 	},
 
@@ -3802,6 +3822,26 @@ var supportedStringBuiltIns = []FuncNew{
 					return newImplPrefixIn().doPrefixIn
 				},
 			},
+			{
+				overloadId: 2,
+				args:       []types.T{types.T_varbinary, types.T_varbinary},
+				retType: func(parameters []types.Type) types.Type {
+					return types.T_bool.ToType()
+				},
+				newOp: func() executeLogicOfOverload {
+					return newImplPrefixIn().doPrefixIn
+				},
+			},
+			{
+				overloadId: 3,
+				args:       []types.T{types.T_varbinary, types.T_tuple},
+				retType: func(parameters []types.Type) types.Type {
+					return types.T_bool.ToType()
+				},
+				newOp: func() executeLogicOfOverload {
+					return newImplPrefixIn().doPrefixIn
+				},
+			},
 		},
 	},
 
@@ -3816,6 +3856,26 @@ var supportedStringBuiltIns = []FuncNew{
 			{
 				overloadId: 0,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_varchar},
+				retType: func(parameters []types.Type) types.Type {
+					return types.T_bool.ToType()
+				},
+				newOp: func() executeLogicOfOverload {
+					return PrefixBetween
+				},
+			},
+			{
+				overloadId: 1,
+				args:       []types.T{types.T_varbinary, types.T_varbinary, types.T_varbinary},
+				retType: func(parameters []types.Type) types.Type {
+					return types.T_bool.ToType()
+				},
+				newOp: func() executeLogicOfOverload {
+					return PrefixBetween
+				},
+			},
+			{
+				overloadId: 2,
+				args:       []types.T{types.T_varbinary, types.T_varchar, types.T_varchar},
 				retType: func(parameters []types.Type) types.Type {
 					return types.T_bool.ToType()
 				},
@@ -3889,6 +3949,26 @@ var supportedStringBuiltIns = []FuncNew{
 			{
 				overloadId: 0,
 				args:       []types.T{types.T_varchar, types.T_varchar, types.T_varchar, types.T_uint8},
+				retType: func(parameters []types.Type) types.Type {
+					return types.T_bool.ToType()
+				},
+				newOp: func() executeLogicOfOverload {
+					return PrefixInRange
+				},
+			},
+			{
+				overloadId: 1,
+				args:       []types.T{types.T_varbinary, types.T_varbinary, types.T_varbinary, types.T_uint8},
+				retType: func(parameters []types.Type) types.Type {
+					return types.T_bool.ToType()
+				},
+				newOp: func() executeLogicOfOverload {
+					return PrefixInRange
+				},
+			},
+			{
+				overloadId: 2,
+				args:       []types.T{types.T_varbinary, types.T_varchar, types.T_varchar, types.T_uint8},
 				retType: func(parameters []types.Type) types.Type {
 					return types.T_bool.ToType()
 				},

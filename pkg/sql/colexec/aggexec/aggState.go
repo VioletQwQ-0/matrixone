@@ -116,6 +116,10 @@ type aggInfo struct {
 	groupConcatSourceRowWire           bool
 	groupConcatSourceRowTrusted        bool
 	groupConcatSourceRowProvenanceWire bool
+	// distinctIdentityPrefix marks GROUP_CONCAT's accounted DISTINCT keys.
+	// The key carries comparison identity followed by the original payload so
+	// deduplication is collation-aware without changing the returned value.
+	distinctIdentityPrefix bool
 	// stableEmptyOpaqueState preserves an aggregate's historical partial-result
 	// representation when its resident implementation can now omit empty state.
 	// Private spill records deliberately keep the compact zero-size marker.
@@ -145,6 +149,11 @@ func (a *aggInfo) usesOpaqueArgEncoding() bool {
 
 const distinctInputOrderSourceRowSize = 8
 
+var (
+	canonicalDistinctZero4 [4]byte
+	canonicalDistinctZero8 [8]byte
+)
+
 func (a *aggInfo) distinctInputOrderValueSize() int {
 	if a != nil && a.distinctInputOrderSourceRow {
 		return kAggArgOrdinalSz + distinctInputOrderSourceRowSize
@@ -162,11 +171,36 @@ func makeDistinctInputOrderValue(ordinal uint32, sourceRow uint64) []byte {
 	return value[:]
 }
 
+// makeDistinctInputOrderValueWithPayload keeps the first-seen metadata next
+// to the original aggregate payload.  Accounted GROUP_CONCAT keys use the
+// collation identity as their skiplist key, so the payload cannot remain in
+// that key without making equal values with different spellings distinct.
+func makeDistinctInputOrderValueWithPayload(
+	ordinal uint32,
+	sourceRow uint64,
+	payload []byte,
+) []byte {
+	value := makeDistinctInputOrderValue(ordinal, sourceRow)
+	value = append(value, payload...)
+	return value
+}
+
 func distinctInputOrderSourceRow(value []byte) uint64 {
 	if len(value) < kAggArgOrdinalSz+distinctInputOrderSourceRowSize {
 		return 0
 	}
 	return binary.BigEndian.Uint64(value[kAggArgOrdinalSz:])
+}
+
+func distinctInputOrderPayload(info *aggInfo, value []byte) ([]byte, bool) {
+	if info == nil || !info.distinctIdentityPrefix {
+		return nil, false
+	}
+	offset := info.distinctInputOrderValueSize()
+	if len(value) < offset {
+		return nil, false
+	}
+	return value[offset:], true
 }
 
 type aggState struct {
@@ -497,8 +531,29 @@ func (ag *aggState) readStateArg(mp *mpool.MPool, i int32, r io.Reader, info *ag
 						kbuf = kbuf[:kAggArgPrefixSz+len(payload)]
 					}
 				}
-				err = ag.insertArgValue(
-					mp, kbuf, makeDistinctInputOrderValue(ui, sourceRow))
+				if info.distinctIdentityPrefix {
+					wirePayload := append([]byte(nil), kbuf[kAggArgPrefixSz:]...)
+					identity, identityErr := groupConcatDistinctIdentityFromPayload(
+						wirePayload, info.argTypes)
+					if identityErr != nil {
+						return identityErr
+					}
+					keySize := kAggArgPrefixSz + 4 + len(identity)
+					key, keyErr := ag.resizeArgScratch(mp, keySize)
+					if keyErr != nil {
+						return keyErr
+					}
+					binary.BigEndian.PutUint16(key[:kAggArgPrefixSz], uint16(i))
+					binary.BigEndian.PutUint32(
+						key[kAggArgPrefixSz:kAggArgPrefixSz+4], uint32(len(identity)))
+					copy(key[kAggArgPrefixSz+4:], identity)
+					value := makeDistinctInputOrderValueWithPayload(
+						ui, sourceRow, wirePayload)
+					err = ag.insertArgValue(mp, key, value)
+				} else {
+					err = ag.insertArgValue(
+						mp, kbuf, makeDistinctInputOrderValue(ui, sourceRow))
+				}
 			} else {
 				err = ag.insertArgValueWithInserter(mp, kbuf, nil, &inserter)
 			}
@@ -1211,8 +1266,16 @@ func (ag *aggState) fillDistinctArgInInputOrder(
 	key []byte,
 	sourceRow uint64,
 ) error {
-	err := ag.insertArgValue(
-		mp, key, makeDistinctInputOrderValue(ag.argCnt[y], sourceRow))
+	return ag.fillDistinctArgInInputOrderWithValue(
+		mp, y, key, makeDistinctInputOrderValue(ag.argCnt[y], sourceRow))
+}
+
+func (ag *aggState) fillDistinctArgInInputOrderWithValue(
+	mp *mpool.MPool,
+	y uint16,
+	key, value []byte,
+) error {
+	err := ag.insertArgValue(mp, key, value)
 	if err == arenaskl.ErrRecordExists {
 		return nil
 	}
@@ -1278,6 +1341,16 @@ func (ag *aggState) mergeArgs(mp *mpool.MPool, y uint16, other *aggState, otherY
 			binary.BigEndian.PutUint32(kcpy[kAggArgPrefixSz:kAggArgPrefixSz+kAggArgOrdinalSz], ag.argCnt[y])
 		}
 		if info.preserveDistinctInputOrder {
+			if info.distinctIdentityPrefix {
+				payload, ok := distinctInputOrderPayload(info, value)
+				if !ok {
+					return mpool.ErrAllocationAccountInvariant
+				}
+				stored := makeDistinctInputOrderValueWithPayload(
+					ag.argCnt[y], distinctInputOrderSourceRow(value), payload)
+				return ag.fillDistinctArgInInputOrderWithValue(
+					mp, y, kcpy, stored)
+			}
 			return ag.fillDistinctArgInInputOrder(
 				mp, y, kcpy, distinctInputOrderSourceRow(value))
 		}
@@ -1474,7 +1547,18 @@ func aggPayloadOffset(info *aggInfo) int {
 }
 
 func aggPayloadFromKey(info *aggInfo, k []byte) []byte {
-	return k[aggPayloadOffset(info):]
+	payload := k[aggPayloadOffset(info):]
+	if info != nil && info.distinctIdentityPrefix {
+		if len(payload) < 4 {
+			return payload
+		}
+		identityLen := int(binary.BigEndian.Uint32(payload[:4]))
+		if identityLen < 0 || identityLen > len(payload)-4 {
+			return payload
+		}
+		payload = payload[4+identityLen:]
+	}
+	return payload
 }
 
 func (ag *aggState) free(mp *mpool.MPool) {
@@ -2317,15 +2401,64 @@ func canonicalDistinctArgumentSize(vec *vector.Vector, row int) (int, bool) {
 	return 0, false
 }
 
+// canonicalDistinctArgumentBytes resolves the identity used by DISTINCT. The
+// aggregate state stores comparison bytes, while the aggregate result still
+// comes from the original input vector. Native 0900 strings therefore must use
+// the same opaque key as GROUP BY and hash; they cannot remain raw payloads.
+func canonicalDistinctArgumentBytes(
+	vec *vector.Vector,
+	row int,
+	scratch []byte,
+) ([]byte, error) {
+	if vec == nil || row < 0 {
+		return nil, mpool.ErrAllocationAccountInvariant
+	}
+	if size, ok := canonicalDistinctArgumentSize(vec, row); ok {
+		if len(scratch) < size {
+			if scratch == nil {
+				if size == 4 {
+					return canonicalDistinctZero4[:], nil
+				}
+				return canonicalDistinctZero8[:], nil
+			}
+			return nil, mpool.ErrAllocationAccountInvariant
+		}
+		clear(scratch[:size])
+		return scratch[:size], nil
+	}
+	raw := vec.GetRawBytesAt(row)
+	if types.IsNative0900Collation(vec.GetType().Charset) &&
+		vec.GetType().Oid.IsMySQLString() {
+		part, err := types.ResolveStringKeyPart(*vec.GetType(), types.PADSpaceKeyV1)
+		if err != nil {
+			return nil, err
+		}
+		return part.Key(scratch[:0], raw)
+	}
+	return raw, nil
+}
+
+func canonicalDistinctArgumentPayloadSize(vec *vector.Vector, row int) (int, error) {
+	key, err := canonicalDistinctArgumentBytes(vec, row, nil)
+	if err != nil {
+		return 0, err
+	}
+	return len(key), nil
+}
+
 // copyCanonicalDistinctArgument copies one DISTINCT payload into dst. Signed
 // zero is represented by the native-endian all-zero payload used by the
-// resident aggregate key, while all other values retain their raw bytes.
-func copyCanonicalDistinctArgument(dst []byte, vec *vector.Vector, row int) int {
-	if size, ok := canonicalDistinctArgumentSize(vec, row); ok {
-		clear(dst[:size])
-		return size
+// resident aggregate key. Native 0900 text is copied as its opaque comparison
+// identity; the user-visible vector remains untouched.
+func copyCanonicalDistinctArgument(dst []byte, vec *vector.Vector, row int) (int, error) {
+	key, err := canonicalDistinctArgumentBytes(vec, row, dst)
+	if err != nil {
+		return 0, err
 	}
-	return copy(dst, vec.GetRawBytesAt(row))
+	if len(key) > len(dst) {
+		return 0, mpool.ErrAllocationAccountInvariant
+	}
+	return copy(dst, key), nil
 }
 
 func distinctFixedValue(vec *vector.Vector, row, width int) (uint64, error) {
@@ -2347,19 +2480,16 @@ func distinctFixedValue(vec *vector.Vector, row, width int) (uint64, error) {
 	return binary.LittleEndian.Uint64(padded[:]), nil
 }
 
-func distinctArgumentRowsEqual(vec *vector.Vector, left, right int) bool {
-	leftZero := false
-	if _, ok := canonicalDistinctArgumentSize(vec, left); ok {
-		leftZero = true
+func distinctArgumentRowsEqual(vec *vector.Vector, left, right int) (bool, error) {
+	leftKey, err := canonicalDistinctArgumentBytes(vec, left, nil)
+	if err != nil {
+		return false, err
 	}
-	rightZero := false
-	if _, ok := canonicalDistinctArgumentSize(vec, right); ok {
-		rightZero = true
+	rightKey, err := canonicalDistinctArgumentBytes(vec, right, nil)
+	if err != nil {
+		return false, err
 	}
-	if leftZero || rightZero {
-		return leftZero && rightZero
-	}
-	return bytes.Equal(vec.GetRawBytesAt(left), vec.GetRawBytesAt(right))
+	return bytes.Equal(leftKey, rightKey), nil
 }
 
 func (ag *aggState) fillDistinctVectorArg(
@@ -2368,16 +2498,16 @@ func (ag *aggState) fillDistinctVectorArg(
 	vec *vector.Vector,
 	row int,
 ) error {
-	val := vec.GetRawBytesAt(row)
-	if size, ok := canonicalDistinctArgumentSize(vec, row); ok {
-		val = val[:size]
+	val, err := canonicalDistinctArgumentBytes(vec, row, nil)
+	if err != nil {
+		return err
 	}
 	k, err := ag.resizeArgScratch(mp, kAggArgPrefixSz+len(val))
 	if err != nil {
 		return err
 	}
 	binary.BigEndian.PutUint16(k[:kAggArgPrefixSz], y)
-	copyCanonicalDistinctArgument(k[kAggArgPrefixSz:], vec, row)
+	copy(k[kAggArgPrefixSz:], val)
 	return ag.insertPreparedArg(mp, y, k, true)
 }
 
@@ -2620,12 +2750,18 @@ func (ae *aggExec) batchFillArgs(offset int, groups []uint64, vectors []*vector.
 			if err != nil {
 				return err
 			}
-			raw := vec.GetRawBytesAt(row)
-			if uint64(len(raw)) > math.MaxUint32 ||
-				len(raw) > math.MaxInt-totalSize-4 {
+			valueSize := len(vec.GetRawBytesAt(row))
+			if distinct {
+				valueSize, err = canonicalDistinctArgumentPayloadSize(vec, row)
+				if err != nil {
+					return err
+				}
+			}
+			if uint64(valueSize) > math.MaxUint32 ||
+				valueSize > math.MaxInt-totalSize-4 {
 				return mpool.ErrAllocationAllocatorLimit
 			}
-			totalSize += 4 + len(raw)
+			totalSize += 4 + valueSize
 		}
 
 		x, y := ae.getXY(group - 1)
@@ -2652,15 +2788,22 @@ func (ae *aggExec) batchFillArgs(offset int, groups []uint64, vectors []*vector.
 			if err != nil {
 				return err
 			}
-			raw := vec.GetRawBytesAt(row)
-			binary.BigEndian.PutUint32(key[off:], uint32(len(raw)))
-			off += 4
 			if distinct {
-				copyCanonicalDistinctArgument(key[off:], vec, row)
+				value, err := canonicalDistinctArgumentBytes(vec, row, key[off+4:])
+				if err != nil {
+					return err
+				}
+				binary.BigEndian.PutUint32(key[off:], uint32(len(value)))
+				off += 4
+				copy(key[off:], value)
+				off += len(value)
 			} else {
+				raw := vec.GetRawBytesAt(row)
+				binary.BigEndian.PutUint32(key[off:], uint32(len(raw)))
+				off += 4
 				copy(key[off:], raw)
+				off += len(raw)
 			}
-			off += len(raw)
 		}
 		if err := state.insertPreparedArg(ae.mp, y, key, distinct); err != nil {
 			return err

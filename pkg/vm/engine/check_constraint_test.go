@@ -60,17 +60,21 @@ func TestPlanDefsToExeDefsPersistsChecksInSchemaExtra(t *testing.T) {
 		Name:           "t",
 		Checks:         []*plan.CheckDef{check},
 		DefaultCharset: uint32(types.CharsetBinary),
+		KeyFormat:      uint32(types.PADSpaceKeyV1),
 	})
 	require.NoError(t, err)
 	require.Equal(t, []*plan.CheckDef{check}, extra.Checks)
 	require.Equal(t, uint32(types.CharsetBinary), extra.DefaultCharset)
+	require.Equal(t, uint32(types.PADSpaceKeyV1), extra.KeyFormat)
 
 	roundTrip := api.MustUnmarshalTblExtra(api.MustMarshalTblExtra(extra))
 	require.Equal(t, extra.Checks, roundTrip.Checks)
 	require.Equal(t, extra.DefaultCharset, roundTrip.DefaultCharset)
+	require.Equal(t, extra.KeyFormat, roundTrip.KeyFormat)
 
 	clone := api.CloneExtra(extra)
 	require.Equal(t, extra.Checks, clone.Checks)
 	require.Equal(t, extra.DefaultCharset, clone.DefaultCharset)
+	require.Equal(t, extra.KeyFormat, clone.KeyFormat)
 	require.NotSame(t, extra.Checks[0], clone.Checks[0])
 }

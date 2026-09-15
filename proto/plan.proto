@@ -248,6 +248,11 @@ message Function {
   // overload while optimizers still distinguish it from an implicit cast.
   // Older CNs safely ignore this unknown field and execute the legacy overload.
   bool syntax_explicit_cast = 5;
+  // Planner provenance for an expression-level COLLATE. The executor still
+  // evaluates the ordinary cast overload; this bit lets later coercion keep
+  // MySQL's explicit-collation precedence after the wrapper crosses a plan
+  // boundary.
+  bool explicit_collation = 6;
 }
 
 // PreparedNumericMetadata is sparse planner provenance for a numeric overload
@@ -449,6 +454,9 @@ message IndexDef {
   // identity would misinterpret plans produced by versions that carried it.
   reserved 14;
   reserved "visibility_set";
+  // Physical key encoding used by the index table. Zero is legacy and is
+  // intentionally kept as the default for pre-format-version catalogs.
+  uint32 key_format = 15;
 }
 
 message ForeignKeyDef {
@@ -576,6 +584,9 @@ message TableDef {
   // Default collation class inherited by textual columns without an explicit
   // column-level collation. Uses the container/types Charset constants.
   uint32 default_charset = 39;
+  // Physical tuple/key encoding used by this relation. Zero is legacy and is
+  // intentionally kept as the default for pre-format-version catalogs.
+  uint32 key_format = 40;
 }
 
 message TableFunction {

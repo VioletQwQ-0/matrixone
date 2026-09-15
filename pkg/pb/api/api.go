@@ -86,6 +86,7 @@ func CloneExtra(info *SchemaExtra) *SchemaExtra {
 		AutoIncrOffset:    info.AutoIncrOffset,
 		AutoIncrEpoch:     info.AutoIncrEpoch,
 		DefaultCharset:    info.DefaultCharset,
+		KeyFormat:         info.KeyFormat,
 		Checks:            checks,
 	}
 }

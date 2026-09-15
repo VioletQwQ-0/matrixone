@@ -4,9 +4,32 @@ Issue: #28164. Parent design: `issue-28164-collation-key-reuse.md` at
 `c54e2fc5e9057c3bfcc5a1ee1a2dfd75b3feb1d7`.
 Implementation worktree: `codex/issue-28164-collation-integration`.
 
-Status: D1 validated; tuple and executable query-expression integration locally
-validated. This is not approval to activate new-format PK/index tables.
-The complete feature remains subject to the parent design's D2-D5 gates.
+Status at the current implementation head: the weight payload, tuple boundary
+and executable query-expression integration have focused local evidence. The
+implementation also contains candidate wiring for native 0900 metadata,
+planner comparison/hash paths, hidden string PKs, unique/secondary index
+writers and probes, aggregate/vector consumers, and fail-open storage filters.
+Production admission is explicitly closed until the durable cluster gate is
+raised; the complete feature remains subject to the parent design's D2-D5
+gates.
+
+Implementation update (2026-09-15):
+
+- `PASS`: Vitess v0.24.0 is pinned as the candidate native UCA 9.0 backend;
+  the fixed weight implementation and tuple/key unit tests run against the
+  selected local corpus. A complete independent v0.24.0/MySQL byte freeze is
+  still pending.
+- `PASS`: ALTER COPY now includes collation and physical-format identity in
+  dedup decisions, preserves the hidden-PK format for PK-only tables, and
+  rejects unknown index-column references. Explicit-collation precedence now
+  chooses the strongest operand before resolving weaker ties.
+- `PASS`: focused plan, function, aggregate, readutil and remote-protocol
+  checks; `go mod verify`, `git diff --check` and changed-file formatting checks.
+- `NOT_RUN`: live SQL DML/transaction and concurrent-conflict runs, persisted
+  object zonemap/Bloom pruning, restart/backup/restore, explicit migration
+  failure rollback, old-node mixed-version rejection, independent 0900-bin
+  oracle, performance budgets, full CI and QA. These remain production-
+  activation gates.
 
 ## Independent oracle and a rejected candidate
 
@@ -126,9 +149,12 @@ that escaping and field boundaries preserve the payload order.
 The second argument is a constant in the plan, not per-key stored metadata.
 Both tuple producers and that vector function use the same resolved key-part
 implementation. The expression has a MORPC v68 sender/receiver fence using the existing
-remote-expression capability walk. Missing/older protocol versions are rejected,
-including a downgrade between sending and decoding. This is an expression
-transport fence, not a durable-table activation mechanism.
+remote-expression capability walk. Native 0900 metadata additionally requires
+the reserved durable-cluster activation gate, currently above the latest
+protocol, so ordinary production plans fail closed. Missing/older protocol
+versions are rejected, including a downgrade between sending and decoding.
+This is still not evidence that a durable table migration or recovery path is
+complete.
 
 The return type is binary and can be passed to unchanged
 `serial`/`serial_full`. No cast to indexed column width is performed on probes.

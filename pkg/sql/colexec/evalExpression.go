@@ -21,6 +21,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/matrixorigin/matrixone/pkg/common/collation"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/common/reuse"
@@ -2379,12 +2380,24 @@ func zoneMapInVectorOrderIsKnown(vec *vector.Vector) bool {
 	prev := col[0].GetByteSlice(area)
 	for i := 1; i < len(col); i++ {
 		cur := col[i].GetByteSlice(area)
-		if checkOrder && bytes.Compare(prev, cur) > 0 {
+		if checkOrder && compareExpressionStringBytes(vec.GetType(), prev, cur) > 0 {
 			return false
 		}
 		prev = cur
 	}
 	return true
+}
+
+func compareExpressionStringBytes(typ *types.Type, left, right []byte) int {
+	if typ != nil {
+		switch typ.Charset {
+		case types.CharsetUTF8MB40900AI:
+			return collation.UCA0900AICollate(left, right)
+		case types.CharsetUTF8MB40900Bin:
+			return collation.UCA0900BinCollate(left, right)
+		}
+	}
+	return bytes.Compare(left, right)
 }
 
 func GetExprZoneMap(
@@ -2409,6 +2422,16 @@ func GetExprZoneMap(
 		zms[expr.AuxId] = meta.MustGetColumn(uint16(columnMap[int(t.Col.ColPos)])).ZoneMap()
 
 	case *plan.Expr_F:
+		// The physical key produced by internal_collation_key is an opaque
+		// weight byte string.  Column zonemaps are built from the user-visible
+		// string, so comparing that raw zonemap with a weight key is not a
+		// sound ordering test and can prune a matching block.  Until storage
+		// publishes a zonemap in the same physical key format, fail open and
+		// let the residual filter evaluate the predicate.
+		if t.F != nil && t.F.Func != nil && t.F.Func.ObjName == "internal_collation_key" {
+			zms[expr.AuxId].Reset()
+			return zms[expr.AuxId]
+		}
 		id := t.F.GetFunc().GetObj()
 		if overload, errGetFunc := function.GetFunctionById(ctx, id); errGetFunc != nil {
 			zms[expr.AuxId].Reset()

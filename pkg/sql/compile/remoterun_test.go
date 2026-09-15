@@ -1867,6 +1867,34 @@ func TestRemoteCollationKeyProtocolValidation(t *testing.T) {
 	require.Nil(t, decoded)
 }
 
+func TestRemoteNativeCollationRequiresDurableAdmission(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	rt := moruntime.ServiceRuntime(proc.GetService())
+	oldVersion, hadVersion := rt.GetGlobalVariables(moruntime.MOProtocolVersion)
+	t.Cleanup(func() {
+		if hadVersion {
+			rt.SetGlobalVariables(moruntime.MOProtocolVersion, oldVersion)
+		} else {
+			rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCLatestVersion)
+		}
+	})
+	native := &planpb.Expr{
+		Typ:  planpb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB40900AI)},
+		Expr: &planpb.Expr_Col{Col: &planpb.ColRef{ColPos: 0}},
+	}
+	p := &pipeline.Pipeline{
+		InstructionList: []*pipeline.Instruction{{ProjectList: []*planpb.Expr{native}}},
+	}
+	features, err := planpb.RequiredRemoteExpressionFeatures(p)
+	require.NoError(t, err)
+	require.True(t, features.NativeCollationV1)
+	rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCLatestVersion)
+	err = validateRemoteExpressionPipelineProtocol(proc, p)
+	require.ErrorContains(t, err, "native utf8mb4_0900 semantics require the durable cluster rollout gate")
+	rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCVersionNativeCollation)
+	require.NoError(t, validateRemoteExpressionPipelineProtocol(proc, p))
+}
+
 func TestExternalScanParquetRowGroupShardsRoundtrip(t *testing.T) {
 	ctx := &scopeContext{
 		id:     1,

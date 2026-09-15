@@ -180,32 +180,63 @@ const (
 	// CharsetUTF8 is the explicit utf8mb4_general_ci text identity. It must not
 	// use zero: old catalog rows have zero in this formerly dummy field.
 	CharsetUTF8 uint8 = 3
+	// CharsetUTF8MB40900AI and CharsetUTF8MB40900Bin are native MySQL UCA 9.0
+	// identities. They are distinct from CharsetUTF8 and CharsetUTF8MB4Bin;
+	// historical aliases are never reinterpreted as these values.
+	CharsetUTF8MB40900AI  uint8 = 4
+	CharsetUTF8MB40900Bin uint8 = 5
 )
 
+func IsCaseInsensitiveCollation(charset uint8) bool {
+	return charset == CharsetUTF8 || charset == CharsetUTF8MB40900AI
+}
+
+func IsNative0900Collation(charset uint8) bool {
+	return charset == CharsetUTF8MB40900AI || charset == CharsetUTF8MB40900Bin
+}
+
+func IsTextCollation(charset uint8) bool {
+	return charset == CharsetLegacy || charset == CharsetUTF8MB4Bin ||
+		charset == CharsetUTF8 || IsNative0900Collation(charset)
+}
+
 // MergeStringCharset derives one collation identity for a value composed from
-// multiple MySQL strings. Binary bytes must never be reinterpreted as UTF-8;
-// binary-collated utf8mb4 and legacy text likewise retain their stronger
-// ordering identity when combined with default general-ci text.
+// multiple MySQL strings. Binary bytes must never be reinterpreted as UTF-8.
+// The precedence is deterministic rather than operand-order dependent: an
+// opaque binary domain wins first, then binary collations, then native 0900
+// accent-insensitive text, then legacy/general text. The expression binder is
+// still responsible for MySQL coercibility (explicit COLLATE, column,
+// literal, and parameter provenance) before it calls this type-only fallback.
 func MergeStringCharset(parameters []Type, fallback uint8) uint8 {
 	result := fallback
 	for _, parameter := range parameters {
 		if !parameter.Oid.IsMySQLString() {
 			continue
 		}
-		switch parameter.Charset {
-		case CharsetBinary:
-			result = CharsetBinary
-		case CharsetUTF8MB4Bin:
-			if result != CharsetBinary {
-				result = CharsetUTF8MB4Bin
-			}
-		case CharsetLegacy:
-			if result == CharsetUTF8 {
-				result = CharsetLegacy
-			}
+		if stringCharsetPrecedence(parameter.Charset) > stringCharsetPrecedence(result) {
+			result = parameter.Charset
 		}
 	}
 	return result
+}
+
+func stringCharsetPrecedence(charset uint8) uint8 {
+	switch charset {
+	case CharsetBinary:
+		return 6
+	case CharsetUTF8MB40900Bin:
+		return 5
+	case CharsetUTF8MB4Bin:
+		return 4
+	case CharsetUTF8MB40900AI:
+		return 3
+	case CharsetLegacy:
+		return 2
+	case CharsetUTF8:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // ProtoSize is used by gogoproto.
