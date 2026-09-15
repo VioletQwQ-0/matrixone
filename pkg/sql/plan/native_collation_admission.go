@@ -63,7 +63,7 @@ func requireNative0900PlanAdmission(ctx context.Context, proc *process.Process, 
 	if err != nil {
 		return err
 	}
-	if !features.NativeCollationV1 {
+	if !features.NativeCollationV1 && !features.NativeCollationSchemaV1 {
 		return nil
 	}
 	return moerr.NewNotSupportedNoCtx(native0900AdmissionError)
