@@ -198,8 +198,10 @@ func TestExplicitCollationWinsAfterLowerPriorityConflict(t *testing.T) {
 	explicit := bind("select 'a' collate utf8mb4_0900_ai_ci")
 	// The first two operands have equal, weaker coercibility but different
 	// collations. The later explicit operand must win before that tie is merged.
-	err := normalizeCollationCoercibilityArgs(context.Background(), "=",
-		[]*pb.Expr{legacyColumn, nativeColumn, explicit})
+	args := []*pb.Expr{legacyColumn, nativeColumn, explicit}
+	err := normalizeCollationCoercibilityArgs(context.Background(), "=", args)
 	require.NoError(t, err)
-	require.Equal(t, uint32(types.CharsetUTF8MB40900AI), legacyColumn.Typ.Charset)
+	require.Equal(t, uint32(types.CharsetUTF8MB40900AI), args[0].Typ.Charset)
+	require.Equal(t, uint32(types.CharsetUTF8), legacyColumn.Typ.Charset,
+		"normalization must not mutate a shared operand")
 }

@@ -6401,6 +6401,12 @@ func normalizeCollationCoercibilityArgs(ctx context.Context, name string, args [
 			return moerr.NewInvalidInputf(ctx, "%s for operation '%s'", err.Error(), name)
 		}
 	}
+	// Expression nodes can be shared by projections, filters and join keys.
+	// Apply the derived identity to private copies so choosing a comparison
+	// collation cannot mutate another consumer's type metadata.
+	for i, arg := range args {
+		args[i] = DeepCopyExpr(arg)
+	}
 	var apply func(*plan.Expr)
 	apply = func(expr *plan.Expr) {
 		if expr == nil {
