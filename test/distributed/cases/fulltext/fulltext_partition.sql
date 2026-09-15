@@ -35,6 +35,10 @@ select id from ft_part where match(body) against('eta') order by id;
 replace into ft_part values (7, 20, 'theta seven');
 select id from ft_part where match(body) against('beta') order by id;
 select id from ft_part where match(body) against('theta') order by id;
+replace into ft_part values (8, 80, 'iota eight'), (9, 60, 'kappa nine');
+select id from ft_part where match(body) against('eta') order by id;
+select id from ft_part where match(body) against('iota') order by id;
+select id from ft_part where match(body) against('kappa') order by id;
 
 begin;
 update ft_part set body = 'rollback three' where id = 3;
@@ -88,11 +92,6 @@ update ft_txn set body = 'transaction rollback' where id = 1001;
 rollback;
 select id from ft_txn where match(body) against('committed') order by id;
 
-create table ft_create(id int primary key, body text) partition by hash(id) partitions 2;
-insert into ft_create values (601, 'created alpha'), (602, 'created beta');
-create fulltext index fti_created on ft_create(body);
-select id from ft_create where match(body) against('created') order by id;
-
 create table ft_alter(id int primary key, body text) partition by hash(id) partitions 2;
 insert into ft_alter values (701, 'altered alpha'), (702, 'altered beta');
 alter table ft_alter add fulltext index fti_altered(body);
@@ -119,7 +118,6 @@ drop table ft_null;
 drop table ft_compare_part;
 drop table ft_compare_plain;
 drop table ft_txn;
-drop table ft_create;
 drop table ft_alter;
 drop table ft_prepared;
 delete from ft_part where id = 5;

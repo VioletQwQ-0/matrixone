@@ -410,9 +410,11 @@ func TestPartitionedFulltextDMLShapesBuildRoutedMaintenance(t *testing.T) {
 					}
 					for _, updateCtx := range node.UpdateCtxList {
 						if updateCtx.TableDef != nil && updateCtx.TableDef.TblId == base.TblId {
-							require.Len(t, updateCtx.PartitionCols, 1,
-								"partitioned REPLACE must route the replacement row")
+							require.Len(t, updateCtx.PartitionCols, 2,
+								"partitioned REPLACE must route the old and replacement rows independently")
 							require.GreaterOrEqual(t, updateCtx.PartitionCols[0].ColPos, int32(0))
+							require.GreaterOrEqual(t, updateCtx.PartitionCols[1].ColPos, int32(0))
+							require.NotEqual(t, updateCtx.PartitionCols[0].ColPos, updateCtx.PartitionCols[1].ColPos)
 						}
 					}
 				}

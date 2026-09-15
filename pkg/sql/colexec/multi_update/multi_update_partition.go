@@ -569,16 +569,56 @@ func (op *PartitionMultiUpdate) writePartitionKeyUpdate(
 	input *batch.Batch,
 ) error {
 	mainCtx := target.contexts[0]
-	deleteContexts := clonePartitionPhaseContexts(target.contexts, true)
-	if err := op.writePartitionPhase(
-		proc, target, deleteContexts, mainCtx.PartitionCols[0], input,
-	); err != nil {
+	deleteInput, owned, err := filterPartitionDeleteRows(proc, mainCtx, input)
+	if err != nil {
 		return err
+	}
+	if owned {
+		defer deleteInput.Clean(proc.Mp())
+	}
+	if deleteInput.RowCount() > 0 {
+		deleteContexts := clonePartitionPhaseContexts(target.contexts, true)
+		if err = op.writePartitionPhase(
+			proc, target, deleteContexts, mainCtx.PartitionCols[0], deleteInput,
+		); err != nil {
+			return err
+		}
 	}
 	insertContexts := clonePartitionPhaseContexts(target.contexts, false)
 	return op.writePartitionPhase(
 		proc, target, insertContexts, mainCtx.PartitionCols[1], input,
 	)
+}
+
+func filterPartitionDeleteRows(
+	proc *process.Process,
+	ctx *MultiUpdateCtx,
+	input *batch.Batch,
+) (*batch.Batch, bool, error) {
+	if len(ctx.DeleteCols) == 0 || ctx.DeleteCols[0] < 0 || ctx.DeleteCols[0] >= len(input.Vecs) {
+		return nil, false, moerr.NewInternalError(proc.Ctx, "invalid partition update delete rowid column")
+	}
+	rowIDVec := input.Vecs[ctx.DeleteCols[0]]
+	if rowIDVec == nil || rowIDVec.GetType().Oid != types.T_Rowid {
+		return nil, false, moerr.NewInternalError(proc.Ctx, "invalid partition update delete rowid type")
+	}
+	if !rowIDVec.HasNull() {
+		return input, false, nil
+	}
+
+	selections := make([]int64, 0, input.RowCount())
+	for row := 0; row < input.RowCount(); row++ {
+		if !rowIDVec.IsNull(uint64(row)) {
+			selections = append(selections, int64(row))
+		}
+	}
+	filtered, err := input.CloneWithoutAllocationAccount(proc.Mp(), true)
+	if err != nil {
+		return nil, false, err
+	}
+	filtered.Shrink(selections, false)
+	filtered.SetRowCount(len(selections))
+	return filtered, true, nil
 }
 
 func clonePartitionTargetContexts(contexts []*MultiUpdateCtx) []*MultiUpdateCtx {

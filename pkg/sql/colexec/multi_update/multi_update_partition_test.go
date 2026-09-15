@@ -217,6 +217,34 @@ func TestPartitionTargetSelectionPrecedesDirectAndS3Routing(t *testing.T) {
 	}
 }
 
+func TestFilterPartitionDeleteRowsSkipsReplaceRowsWithoutConflict(t *testing.T) {
+	proc := testutil.NewProcess(t)
+	mp := proc.Mp()
+	input := batch.NewWithSize(3)
+	input.Vecs[0] = testutil.MakeRowIdVector(
+		[]types.Rowid{types.BuildTestRowid(1, 1), types.BuildTestRowid(1, 2)},
+		[]uint64{1},
+		mp,
+	)
+	input.Vecs[1] = testutil.MakeInt64Vector([]int64{2, 0}, nil, mp)
+	input.Vecs[2] = testutil.MakeInt64Vector([]int64{7, 8}, nil, mp)
+	input.SetRowCount(2)
+	defer input.Clean(mp)
+
+	filtered, owned, err := filterPartitionDeleteRows(
+		proc,
+		&MultiUpdateCtx{DeleteCols: []int{0}, PartitionCols: []int{1, 2}},
+		input,
+	)
+	require.NoError(t, err)
+	require.True(t, owned)
+	defer filtered.Clean(mp)
+	require.Equal(t, 1, filtered.RowCount())
+	require.Equal(t, []int64{2}, vector.MustFixedColWithTypeCheck[int64](filtered.Vecs[1]))
+	require.Equal(t, []int64{7}, vector.MustFixedColWithTypeCheck[int64](filtered.Vecs[2]))
+	require.Equal(t, 2, input.RowCount(), "insert phase must retain conflict-free replacement rows")
+}
+
 func TestClonePartitionTargetContextsDisablesSecondSelectionPass(t *testing.T) {
 	contexts := []*MultiUpdateCtx{
 		{ObjRef: &plan.ObjectRef{}, TableDef: &plan.TableDef{}, DedupByTargetRowID: true, AffectedRowsCols: []int{1}},

@@ -83,6 +83,21 @@ func TestDupOperator(t *testing.T) {
 	require.True(t, duplicatedFilter.IsAssert)
 }
 
+func TestPartitionDeleteDoesNotUseRawDistributedDelete(t *testing.T) {
+	node := &plan.Node{Stats: &plan.Stats{
+		Outcnt: float64(DistributedThreshold/SingleLineSizeEstimate) + 1,
+	}}
+	raw := deletion.NewArgument()
+	raw.DeleteCtx = &deletion.DeleteCtx{}
+	require.True(t, shouldUseDistributedDelete(raw, raw, node))
+
+	partitioned := deletion.NewPartitionDelete(raw, 42)
+	require.False(t, shouldUseDistributedDelete(partitioned, raw, node),
+		"the raw remote-delete protocol cannot preserve partition routing")
+	raw.DeleteCtx.CanTruncate = true
+	require.False(t, shouldUseDistributedDelete(raw, raw, node))
+}
+
 func TestConstructMergeGroupCarriesEmptyGroupingSetMetadata(t *testing.T) {
 	groupNode := &plan.Node{GroupBy: []*plan.Expr{
 		{Typ: plan.Type{Id: int32(types.T_varchar), Width: 20}},

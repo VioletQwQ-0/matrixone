@@ -700,7 +700,7 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 				}
 			}
 		}
-		if partitionedFulltext {
+		if partitioned {
 			partitionCols := make(map[string]struct{})
 			for _, partitionDef := range tableDef.Partition.PartitionDefs {
 				if partitionDef != nil {
@@ -794,6 +794,12 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 			requiredOldCols := make(map[string]struct{}, 2+len(tableDef.Indexes))
 			requiredOldCols[catalog.Row_ID] = struct{}{}
 			requiredOldCols[tableDef.Pkey.PkeyColName] = struct{}{}
+			if partitioned {
+				partitionColName := getPartitionColName(tableDef.Partition.PartitionDefs[0].Def)
+				if partitionColName != "" {
+					requiredOldCols[partitionColName] = struct{}{}
+				}
+			}
 			for i, idxDef := range tableDef.Indexes {
 				if skipUniqueIdx[i] && !needsOldIndexMaintenance {
 					continue
@@ -1131,7 +1137,26 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 				return 0, moerr.NewInvalidInputf(builder.GetContext(),
 					"partition column %s is missing from the replacement row", partitionColName)
 			}
+			oldPartitionColPos := deleteCols[1].ColPos
+			if partitionColName != tableDef.Pkey.PkeyColName {
+				oldPos, found := oldColName2Idx[tableDef.Name+"."+partitionColName]
+				if !found {
+					return 0, moerr.NewInternalErrorf(builder.GetContext(),
+						"bind replace err, can not find old partition column %s", partitionColName)
+				}
+				oldPartitionColPos = int32(len(finalProjList))
+				finalProjList = append(finalProjList, &plan.Expr{
+					Typ: fullProjList[oldPos[1]].Typ,
+					Expr: &plan.Expr_Col{Col: &plan.ColRef{
+						RelPos: fullProjTag,
+						ColPos: oldPos[1],
+					}},
+				})
+			}
 			updateCtx.PartitionCols = []plan.ColRef{{
+				RelPos: finalProjTag,
+				ColPos: oldPartitionColPos,
+			}, {
 				RelPos: finalProjTag,
 				ColPos: partitionColPos,
 			}}

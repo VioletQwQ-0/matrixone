@@ -8641,7 +8641,7 @@ func (c *Compile) compileDelete(node *plan.Node, ss []*Scope) ([]*Scope, error) 
 		arg = op.(*deletion.PartitionDelete).GetDelete()
 	}
 
-	if node.Stats.GetOutcnt()*float64(SingleLineSizeEstimate) > float64(DistributedThreshold) && !arg.DeleteCtx.CanTruncate {
+	if shouldUseDistributedDelete(op, arg, node) {
 		rs := c.newDeleteMergeScope(arg, ss, node)
 		rs.Magic = MergeDelete
 
@@ -8670,6 +8670,14 @@ func (c *Compile) compileDelete(node *plan.Node, ss []*Scope) ([]*Scope, error) 
 		ss = []*Scope{rs}
 		return ss, nil
 	}
+}
+
+func shouldUseDistributedDelete(op vm.Operator, arg *deletion.Deletion, node *plan.Node) bool {
+	if _, partitioned := op.(*deletion.PartitionDelete); partitioned {
+		return false
+	}
+	return node.Stats.GetOutcnt()*float64(SingleLineSizeEstimate) > float64(DistributedThreshold) &&
+		!arg.DeleteCtx.CanTruncate
 }
 
 func (c *Compile) compileLock(node *plan.Node, ss []*Scope) ([]*Scope, error) {
