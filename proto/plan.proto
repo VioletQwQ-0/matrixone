@@ -42,6 +42,15 @@ message Type {
   // Internal semantic marker for VARCHAR/TEXT values that can carry
   // representation-only CHAR padding through a transparent query boundary.
   bool pad_space = 9;
+  // Planner provenance for the effective string collation.  The separate
+  // presence bit is required because coercibility zero is a valid value for
+  // an explicit COLLATE expression.
+  uint32 collation_coercibility = 10;
+  bool collation_coercibility_set = 11;
+  // A derived expression whose source collations could only be merged into a
+  // binary fallback keeps this marker until an operation-specific consumer
+  // decides whether that fallback is legal (for example CONCAT versus =).
+  bool collation_merge_conflict = 12;
 }
 
 message msgHeader {

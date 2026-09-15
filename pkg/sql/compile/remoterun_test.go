@@ -1890,9 +1890,11 @@ func TestRemoteNativeCollationRequiresDurableAdmission(t *testing.T) {
 	require.True(t, features.NativeCollationV1)
 	rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCLatestVersion)
 	err = validateRemoteExpressionPipelineProtocol(proc, p)
-	require.ErrorContains(t, err, "native utf8mb4_0900 semantics require the durable cluster rollout gate")
+	require.ErrorContains(t, err,
+		"utf8mb4_0900 collation keys are disabled until all cluster nodes support the persisted key format")
 	rt.SetGlobalVariables(moruntime.MOProtocolVersion, defines.MORPCVersionNativeCollation)
-	require.NoError(t, validateRemoteExpressionPipelineProtocol(proc, p))
+	require.ErrorContains(t, validateRemoteExpressionPipelineProtocol(proc, p),
+		"utf8mb4_0900 collation keys are disabled until all cluster nodes support the persisted key format")
 }
 
 func TestExternalScanParquetRowGroupShardsRoundtrip(t *testing.T) {

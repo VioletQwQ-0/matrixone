@@ -109,6 +109,8 @@ func TestExplicitNative0900CollateSetsExpressionIdentity(t *testing.T) {
 	var restored pb.Expr
 	require.NoError(t, restored.Unmarshal(serialized))
 	require.True(t, restored.GetF().ExplicitCollation)
+	require.True(t, restored.Typ.CollationCoercibilitySet)
+	require.Equal(t, uint32(0), restored.Typ.CollationCoercibility)
 }
 
 func TestExplicitCollationWinsOverColumnIdentity(t *testing.T) {
@@ -156,6 +158,61 @@ func TestExplicitCollationWinsOverColumnIdentityInList(t *testing.T) {
 	bound, err := BindFuncExprImplByPlanExpr(context.Background(), "in", []*pb.Expr{left, right})
 	require.NoError(t, err)
 	require.True(t, exprContainsFuncName(bound, "internal_collation_key"))
+}
+
+func TestRowValueINDerivesCollationPerField(t *testing.T) {
+	ai := pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB40900AI)}
+	bin := pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB40900Bin)}
+	value := func(text string, typ pb.Type) *pb.Expr {
+		expr := makePlan2StringConstExprWithType(text)
+		expr.Typ = typ
+		return expr
+	}
+	left := &pb.Expr{Expr: &pb.Expr_List{List: &pb.ExprList{List: []*pb.Expr{
+		value("a", ai),
+		value("b", bin),
+	}}}}
+	right := &pb.Expr{Expr: &pb.Expr_List{List: &pb.ExprList{List: []*pb.Expr{
+		{Expr: &pb.Expr_List{List: &pb.ExprList{List: []*pb.Expr{
+			value("a", ai),
+			value("b", bin),
+		}}}},
+	}}}}
+	bound, err := BindFuncExprImplByPlanExpr(context.Background(), "in", []*pb.Expr{left, right})
+	require.NoError(t, err)
+	require.NotNil(t, bound)
+}
+
+func TestOrdinaryStringFunctionInheritsColumnCoercibility(t *testing.T) {
+	column := &pb.Expr{
+		Typ:  pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB40900AI)},
+		Expr: &pb.Expr_Col{Col: &pb.ColRef{ColPos: 0, Name: "name"}},
+	}
+	lower := &pb.Expr{
+		Typ: pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB40900AI)},
+		Expr: &pb.Expr_F{F: &pb.Function{
+			Func: &pb.ObjectRef{ObjName: "lower"},
+			Args: []*pb.Expr{column},
+		}},
+	}
+	candidate, ok, err := collationCandidateForExpr(lower)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint8(2), candidate.rank)
+	require.Equal(t, uint8(types.CharsetUTF8MB40900AI), candidate.charset)
+}
+
+func TestEqualRankNonBinaryCollationsAreRejectedForComparison(t *testing.T) {
+	left := &pb.Expr{
+		Typ:  pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8)},
+		Expr: &pb.Expr_Col{Col: &pb.ColRef{ColPos: 0, Name: "left_name"}},
+	}
+	right := &pb.Expr{
+		Typ:  pb.Type{Id: int32(types.T_varchar), Charset: uint32(types.CharsetUTF8MB40900AI)},
+		Expr: &pb.Expr_Col{Col: &pb.ColRef{ColPos: 1, Name: "right_name"}},
+	}
+	err := normalizeCollationCoercibilityArgs(context.Background(), "=", []*pb.Expr{left, right})
+	require.ErrorContains(t, err, "illegal mix of collations")
 }
 
 func TestConflictingExplicitCollationsAreRejected(t *testing.T) {

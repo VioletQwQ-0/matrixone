@@ -216,6 +216,7 @@ type RemoteExpressionFeatures struct {
 	ASCIIInt32Result         bool
 	CollationKeyV1           bool
 	NativeCollationV1        bool
+	NativeCollationSchemaV1  bool
 }
 
 func (features RemoteExpressionFeatures) Any() bool {
@@ -226,7 +227,8 @@ func (features RemoteExpressionFeatures) Any() bool {
 		features.TypedConversionFunctions ||
 		features.ASCIIInt32Result ||
 		features.CollationKeyV1 ||
-		features.NativeCollationV1
+		features.NativeCollationV1 ||
+		features.NativeCollationSchemaV1
 }
 
 // RequiredRemoteExpressionFeatures reports the independent versioned
@@ -271,6 +273,31 @@ func RequiredRemoteExpressionFeatures(owner any) (features RemoteExpressionFeatu
 			}
 			return nil
 		})
+	})
+	if err != nil {
+		return
+	}
+	err = walkTableDefsInOwner(owner, func(table *TableDef) error {
+		if table == nil {
+			return nil
+		}
+		if table.KeyFormat != 0 {
+			features.NativeCollationV1 = true
+			features.NativeCollationSchemaV1 = true
+		}
+		for _, col := range table.Cols {
+			if col != nil && (col.Typ.Charset == 4 || col.Typ.Charset == 5) {
+				features.NativeCollationV1 = true
+				features.NativeCollationSchemaV1 = true
+			}
+		}
+		for _, index := range table.Indexes {
+			if index != nil && index.KeyFormat != 0 {
+				features.NativeCollationV1 = true
+				features.NativeCollationSchemaV1 = true
+			}
+		}
+		return nil
 	})
 	return
 }
@@ -681,6 +708,67 @@ func walkExpressionsInOwner(owner any, visitor func(*Expr) error) error {
 			}
 			if expr, ok := value.Interface().(*Expr); ok {
 				return visitor(expr)
+			}
+			pointer := value.Pointer()
+			if _, ok := seen[pointer]; ok {
+				return nil
+			}
+			seen[pointer] = struct{}{}
+			return walk(value.Elem())
+		}
+		switch value.Kind() {
+		case reflect.Struct:
+			for field := 0; field < value.NumField(); field++ {
+				if value.Type().Field(field).PkgPath == "" {
+					if err := walk(value.Field(field)); err != nil {
+						return err
+					}
+				}
+			}
+		case reflect.Slice, reflect.Array:
+			if value.Type().Elem().Kind() == reflect.Uint8 {
+				return nil
+			}
+			for item := 0; item < value.Len(); item++ {
+				if err := walk(value.Index(item)); err != nil {
+					return err
+				}
+			}
+		case reflect.Map:
+			iterator := value.MapRange()
+			for iterator.Next() {
+				if err := walk(iterator.Value()); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(reflect.ValueOf(owner))
+}
+
+// walkTableDefsInOwner visits persisted relation definitions independently of
+// expression roots.  A remote plan may retain only integer projections after
+// optimization while still reading a native-format relation or index.
+func walkTableDefsInOwner(owner any, visitor func(*TableDef) error) error {
+	seen := make(map[uintptr]struct{})
+	var walk func(reflect.Value) error
+	walk = func(value reflect.Value) error {
+		if !value.IsValid() {
+			return nil
+		}
+		if value.Kind() == reflect.Interface {
+			if value.IsNil() {
+				return nil
+			}
+			return walk(value.Elem())
+		}
+		if value.Kind() == reflect.Pointer {
+			if value.IsNil() {
+				return nil
+			}
+			if table, ok := value.Interface().(*TableDef); ok {
+				return visitor(table)
 			}
 			pointer := value.Pointer()
 			if _, ok := seen[pointer]; ok {

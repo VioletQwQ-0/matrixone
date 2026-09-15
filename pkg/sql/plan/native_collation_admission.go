@@ -2,20 +2,20 @@ package plan
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
-	"github.com/matrixorigin/matrixone/pkg/common/runtime"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
-	"github.com/matrixorigin/matrixone/pkg/defines"
+	planpb "github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/vm/process"
 )
 
-// Native 0900 semantics are compiled and tested in this change, but are not
-// admitted by a production service until every participant understands the
-// persisted key format and plan metadata.  The protocol value is deliberately
-// above the current latest value; rollout code must raise it only after the
-// durable catalog/recovery gate is complete.
-const native0900AdmissionProtocol = defines.MORPCVersionNativeCollation
+const native0900AdmissionError = "utf8mb4_0900 collation keys are disabled until all cluster nodes support the persisted key format"
+
+// This switch is set only by the package's _test.go file.  Production builds
+// have no test escape hatch; in particular, an empty Process service identity
+// is not treated as evidence that a native plan is safe to execute.
+var native0900TestAdmission atomic.Bool
 
 func tableUsesNative0900(table *TableDef) bool {
 	if table == nil {
@@ -37,27 +37,34 @@ func tableUsesNative0900(table *TableDef) bool {
 	return false
 }
 
-// native0900AdmissionAllowed intentionally treats the empty service used by
-// planner unit tests as an offline compiler.  Real CN/TN processes have a
-// service identity and must have an explicit rollout protocol value.
+// native0900AdmissionAllowed is deliberately test-only in this phase.  The
+// protocol number is not a durable catalog/recovery gate, so a production
+// service must not enable native 0900 merely by advertising a version.
 func native0900AdmissionAllowed(proc *process.Process) bool {
-	if proc == nil || proc.GetService() == "" {
-		return true
-	}
-	rt := runtime.ServiceRuntime(proc.GetService())
-	if rt == nil {
-		return false
-	}
-	value, ok := rt.GetGlobalVariables(runtime.MOProtocolVersion)
-	version, valid := value.(int64)
-	return ok && valid && version >= native0900AdmissionProtocol
+	return native0900TestAdmission.Load()
 }
 
 func requireNative0900Admission(ctx context.Context, proc *process.Process, table *TableDef) error {
 	if !tableUsesNative0900(table) || native0900AdmissionAllowed(proc) {
 		return nil
 	}
-	return moerr.NewNotSupportedNoCtx(
-		"utf8mb4_0900 collation keys are disabled until all cluster nodes support the persisted key format",
-	)
+	return moerr.NewNotSupportedNoCtx(native0900AdmissionError)
+}
+
+// requireNative0900PlanAdmission is the final local planner fence.  DDL
+// checks protect new catalog objects, while this check also rejects a query
+// which only carries an explicit COLLATE expression or reaches a relation
+// whose native key format survives optimization without a string expression.
+func requireNative0900PlanAdmission(ctx context.Context, proc *process.Process, p *planpb.Plan) error {
+	if p == nil || native0900AdmissionAllowed(proc) {
+		return nil
+	}
+	features, err := planpb.RequiredRemoteExpressionFeatures(p)
+	if err != nil {
+		return err
+	}
+	if !features.NativeCollationV1 {
+		return nil
+	}
+	return moerr.NewNotSupportedNoCtx(native0900AdmissionError)
 }

@@ -2099,10 +2099,9 @@ func validateRemoteExpressionPipelineProtocol(
 			"collation key expressions require MORPC protocol version 68",
 		)
 	}
-	if features.NativeCollationV1 &&
-		(!hasProtocolVersion || protocolVersion < defines.MORPCVersionNativeCollation) {
+	if features.NativeCollationV1 {
 		return moerr.NewNotSupportedNoCtx(
-			"native utf8mb4_0900 semantics require the durable cluster rollout gate",
+			"utf8mb4_0900 collation keys are disabled until all cluster nodes support the persisted key format",
 		)
 	}
 	return nil

@@ -542,15 +542,18 @@ func DeepCopyType(typ *plan.Type) *plan.Type {
 		return nil
 	}
 	return &plan.Type{
-		Id:          typ.Id,
-		NotNullable: typ.NotNullable,
-		Width:       typ.Width,
-		Scale:       typ.Scale,
-		AutoIncr:    typ.AutoIncr,
-		Table:       typ.Table,
-		Enumvalues:  typ.Enumvalues,
-		Charset:     typ.Charset,
-		PadSpace:    typ.PadSpace,
+		Id:                       typ.Id,
+		NotNullable:              typ.NotNullable,
+		Width:                    typ.Width,
+		Scale:                    typ.Scale,
+		AutoIncr:                 typ.AutoIncr,
+		Table:                    typ.Table,
+		Enumvalues:               typ.Enumvalues,
+		Charset:                  typ.Charset,
+		PadSpace:                 typ.PadSpace,
+		CollationCoercibility:    typ.CollationCoercibility,
+		CollationCoercibilitySet: typ.CollationCoercibilitySet,
+		CollationMergeConflict:   typ.CollationMergeConflict,
 	}
 }
 

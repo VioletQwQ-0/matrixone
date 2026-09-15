@@ -355,6 +355,29 @@ func TestRequiresMORPCVersion36MixedJSONBooleanEquality(t *testing.T) {
 	}
 }
 
+func TestRequiredRemoteExpressionFeaturesDetectsNativeSchema(t *testing.T) {
+	owner := &Plan{Plan: &Plan_Query{Query: &Query{
+		Nodes: []*Node{{TableDef: &TableDef{
+			Cols:    []*ColDef{{Typ: Type{Id: 61, Charset: 4}}},
+			Indexes: []*IndexDef{{KeyFormat: 1}},
+		}}},
+	}}}
+	features, err := RequiredRemoteExpressionFeatures(owner)
+	require.NoError(t, err)
+	require.True(t, features.NativeCollationV1)
+	require.True(t, features.NativeCollationSchemaV1)
+
+	legacy := &Plan{Plan: &Plan_Query{Query: &Query{
+		Nodes: []*Node{{TableDef: &TableDef{
+			Cols: []*ColDef{{Typ: Type{Id: 61, Charset: 2}}},
+		}}},
+	}}}
+	features, err = RequiredRemoteExpressionFeatures(legacy)
+	require.NoError(t, err)
+	require.False(t, features.NativeCollationV1)
+	require.False(t, features.NativeCollationSchemaV1)
+}
+
 func TestRequiresMORPCVersion59NumericFormatArguments(t *testing.T) {
 	numeric := func(typeID int32, position int32) *Expr {
 		return &Expr{Typ: Type{Id: typeID}, Expr: &Expr_Col{Col: &ColRef{ColPos: position}}}
