@@ -7711,12 +7711,29 @@ func buildDeleteRowsFullTextIndex(ctx CompilerContext, builder *QueryBuilder, bi
 		)
 		routePos := int32(-1)
 		if partitioned {
-			routeExpr, routeErr := buildPartitionRouteExpr(builder.GetContext(), delCtx.tableDef, 1)
+			// JOIN result construction accepts column references only. Materialize
+			// the route ordinal on the sink-scan side, then carry that column
+			// through the join like the other delete inputs.
+			rightProjection := getProjectionByLastNode(builder, lastNodeId)
+			routeExpr, routeErr := buildPartitionRouteExpr(builder.GetContext(), delCtx.tableDef, 0)
 			if routeErr != nil {
 				return -1, -1, -1, Type{}, -1, routeErr
 			}
+			routeSourcePos := int32(len(rightProjection))
+			rightProjection = append(rightProjection, routeExpr)
+			lastNodeId = builder.appendNode(&plan.Node{
+				NodeType:    plan.Node_PROJECT,
+				Children:    []int32{lastNodeId},
+				ProjectList: rightProjection,
+			}, bindCtx)
 			routePos = int32(len(projectList))
-			projectList = append(projectList, routeExpr)
+			projectList = append(projectList, &plan.Expr{
+				Typ: routeExpr.Typ,
+				Expr: &plan.Expr_Col{Col: &plan.ColRef{
+					RelPos: 1,
+					ColPos: routeSourcePos,
+				}},
+			})
 		}
 
 		rfBuildExpr := &plan.Expr{

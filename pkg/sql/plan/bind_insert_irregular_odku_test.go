@@ -366,8 +366,18 @@ func TestPartitionedFulltextDMLShapesBuildRoutedMaintenance(t *testing.T) {
 	mock := NewMockOptimizer(true)
 	base := mock.ctxt.tables["docs_ft"]
 	base.FeatureFlag |= features.Partitioned
+	partitionExpr := &planpb.Expr{
+		Typ: planpb.Type{Id: int32(types.T_bool)},
+		Expr: &planpb.Expr_F{F: &planpb.Function{
+			Func: &planpb.ObjectRef{ObjName: ">="},
+			Args: []*planpb.Expr{
+				{Typ: base.Cols[0].Typ, Expr: &planpb.Expr_Col{Col: &planpb.ColRef{Name: "id", ColPos: 0}}},
+				makePlan2Int32ConstExprWithType(0),
+			},
+		}},
+	}
 	base.Partition = &planpb.Partition{PartitionDefs: []*planpb.PartitionDef{
-		{Def: makePlan2BoolConstExprWithType(true)},
+		{Def: partitionExpr},
 		{Def: makePlan2BoolConstExprWithType(false)},
 	}}
 
@@ -392,8 +402,73 @@ func TestPartitionedFulltextDMLShapesBuildRoutedMaintenance(t *testing.T) {
 				}
 			}
 			require.Positive(t, routed, "partitioned classic FULLTEXT DML must keep a routed maintenance branch")
+
+			if strings.HasPrefix(sql, "replace into") {
+				for _, node := range logicPlan.GetQuery().Nodes {
+					if node == nil || node.NodeType != planpb.Node_MULTI_UPDATE {
+						continue
+					}
+					for _, updateCtx := range node.UpdateCtxList {
+						if updateCtx.TableDef != nil && updateCtx.TableDef.TblId == base.TblId {
+							require.Len(t, updateCtx.PartitionCols, 1,
+								"partitioned REPLACE must route the replacement row")
+							require.GreaterOrEqual(t, updateCtx.PartitionCols[0].ColPos, int32(0))
+						}
+					}
+				}
+			}
 		})
 	}
+}
+
+func TestPartitionedFulltextDeleteMaterializesRouteBeforeJoin(t *testing.T) {
+	mock := NewMockOptimizer(true)
+	base := mock.ctxt.tables["docs_ft"]
+	base.FeatureFlag |= features.Partitioned
+	base.Partition = &planpb.Partition{PartitionDefs: []*planpb.PartitionDef{
+		{Def: &planpb.Expr{
+			Typ: planpb.Type{Id: int32(types.T_bool)},
+			Expr: &planpb.Expr_F{F: &planpb.Function{
+				Func: &planpb.ObjectRef{ObjName: ">="},
+				Args: []*planpb.Expr{
+					{Typ: base.Cols[0].Typ, Expr: &planpb.Expr_Col{Col: &planpb.ColRef{Name: "id", ColPos: 0}}},
+					makePlan2Int32ConstExprWithType(0),
+				},
+			}},
+		}},
+		{Def: makePlan2BoolConstExprWithType(false)},
+	}}
+
+	logicPlan, err := runOneStmt(mock, t,
+		"delete from constraint_test.docs_ft where id = 1")
+	require.NoError(t, err)
+
+	found := false
+	query := logicPlan.GetQuery()
+	for _, node := range query.Nodes {
+		if node == nil || node.NodeType != planpb.Node_MULTI_UPDATE || len(node.Children) != 1 {
+			continue
+		}
+		for _, updateCtx := range node.UpdateCtxList {
+			if updateCtx == nil || updateCtx.PartitionIndexCtx == nil ||
+				updateCtx.PartitionIndexCtx.ParentTable == nil ||
+				updateCtx.PartitionIndexCtx.ParentTable.TblId != base.TblId {
+				continue
+			}
+			require.GreaterOrEqual(t, node.Children[0], int32(0))
+			require.Less(t, int(node.Children[0]), len(query.Nodes))
+			child := query.Nodes[node.Children[0]]
+			require.NotNil(t, child)
+			require.Equal(t, planpb.Node_JOIN, child.NodeType)
+			require.NotEmpty(t, child.ProjectList)
+			for _, expr := range child.ProjectList {
+				require.NotNil(t, expr.GetCol(),
+					"partitioned FULLTEXT delete JOIN outputs must be column references")
+			}
+			found = true
+		}
+	}
+	require.True(t, found, "partitioned FULLTEXT delete maintenance JOIN is missing")
 }
 
 func nullSafeEqualityColumns(t *testing.T, marker *planpb.Expr) []string {

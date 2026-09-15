@@ -460,10 +460,10 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 	objRef := dmlCtx.objRefs[0]
 	tableDef := dmlCtx.tableDefs[0]
 	pkName := tableDef.Pkey.PkeyColName
-	partitionedFulltext := features.IsPartitioned(tableDef.FeatureFlag) &&
+	partitioned := features.IsPartitioned(tableDef.FeatureFlag) &&
 		tableDef.Partition != nil && len(tableDef.Partition.PartitionDefs) > 0
-	if partitionedFulltext {
-		partitionedFulltext = false
+	partitionedFulltext := false
+	if partitioned {
 		for _, idxDef := range irregularIndexes {
 			if catalog.IsFullTextIndexAlgo(idxDef.IndexAlgo) {
 				partitionedFulltext = true
@@ -994,6 +994,10 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 	finalProjTag := builder.genNewBindTag()
 	finalProjList := make([]*plan.Expr, 0, len(tableDef.Cols)+len(tableDef.Indexes)*2)
 	var newPkIdx int32
+	partitionColName := ""
+	if partitioned {
+		partitionColName = getPartitionColName(tableDef.Partition.PartitionDefs[0].Def)
+	}
 
 	// Position (within finalProjList) of the matched old row's PK, used to key the
 	// irregular-index entries delete. For REPLACE the conflict may be on a non-PK
@@ -1112,7 +1116,7 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 			finalProjList = append(finalProjList, routeExpr)
 		}
 		oldParentColFinalPos[tableDef.Pkey.PkeyColName] = replaceOldPkPos
-		updateCtxList = append(updateCtxList, &plan.UpdateCtx{
+		updateCtx := &plan.UpdateCtx{
 			ObjRef:                objRef,
 			TableDef:              tableDef,
 			InsertCols:            insertCols,
@@ -1120,7 +1124,19 @@ func (builder *QueryBuilder) appendDedupAndMultiUpdateNodesForBindReplace(
 			SkipInsertOnNullPk:    true,
 			InsertPkColIdx:        insertPkColIdx,
 			CountDeleteAffectRows: true,
-		})
+		}
+		if partitioned && partitionColName != "" {
+			partitionColPos, ok := tableDef.Name2ColIndex[partitionColName]
+			if !ok || int(partitionColPos) >= len(finalProjList) {
+				return 0, moerr.NewInvalidInputf(builder.GetContext(),
+					"partition column %s is missing from the replacement row", partitionColName)
+			}
+			updateCtx.PartitionCols = []plan.ColRef{{
+				RelPos: finalProjTag,
+				ColPos: partitionColPos,
+			}}
+		}
+		updateCtxList = append(updateCtxList, updateCtx)
 	}
 
 	orderedIndexPos := make([]int, len(tableDef.Indexes))
