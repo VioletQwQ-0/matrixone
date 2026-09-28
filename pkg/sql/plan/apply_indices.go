@@ -1152,6 +1152,10 @@ func (builder *QueryBuilder) applyIndicesForSort(nodeID int32, sortNode *plan.No
 		// project-anchored path. Preserve the complete exact input stream.
 		return nodeID, nil
 	}
+	// The covered FULLTEXT2 rewrite can sit below a second, explicit SQL SORT.
+	// Inspect that complete chain after the child rewrite, while the original
+	// projection tags are still available, before the project-anchored guard.
+	builder.pushCoveredFulltext2ScoreLimitFromSort(sortNode)
 	if _, ok := builder.projectAnchoredSorts[nodeID]; ok {
 		// The PROJECT above will anchor this Top-K with full column information.
 		return nodeID, nil

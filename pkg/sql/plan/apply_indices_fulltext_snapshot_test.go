@@ -131,6 +131,108 @@ func TestTryApplyCoveredFulltext2NoSnapshotLeavesTVFUnsnapshotted(t *testing.T) 
 	assert.Nil(t, findCoveredFulltext2TVF(t, builder).ScanSnapshot)
 }
 
+func TestCoveredFulltext2ScoreLimitOnlyForEquivalentSort(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		keys      []*plan.OrderBySpec
+		foundRows bool
+		wantLimit uint64
+	}{
+		{name: "score descending", wantLimit: 200},
+		{name: "score ascending", keys: []*plan.OrderBySpec{{Flag: plan.OrderBySpec_ASC}}},
+		{name: "different projected key", keys: []*plan.OrderBySpec{{Flag: plan.OrderBySpec_DESC,
+			Expr: GetColExpr(plan.Type{Id: int32(types.T_int64)}, 0, 0)}}},
+		{name: "second key", keys: []*plan.OrderBySpec{{Flag: plan.OrderBySpec_DESC}, {Flag: plan.OrderBySpec_DESC}}},
+		{name: "found rows", foundRows: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			builder, nodeID, projNode, sortNode, scanNode, idxdef := coveredFulltext2Fixture(t, nil)
+			ctx := builder.ctxByNode[nodeID]
+			ctx.projectTag = builder.genNewBindTag()
+			projNode.ProjectList = append(projNode.ProjectList, DeepCopyExpr(scanNode.FilterList[0]))
+			scoreKey := &plan.OrderBySpec{
+				Expr: GetColExpr(plan.Type{Id: int32(types.T_float32)}, ctx.projectTag, 1),
+				Flag: plan.OrderBySpec_DESC | plan.OrderBySpec_INTERNAL,
+			}
+			scanNode.FilterList = append(scanNode.FilterList, fnExpr("is_null", &plan.Expr{
+				Typ:  plan.Type{Id: int32(types.T_int64)},
+				Expr: &plan.Expr_Col{Col: &plan.ColRef{RelPos: scanNode.BindingTags[0], ColPos: 2, Name: "tag"}},
+			}))
+			if tc.keys == nil {
+				sortNode.OrderBy = []*plan.OrderBySpec{scoreKey}
+			} else {
+				for _, key := range tc.keys {
+					if key.Expr == nil {
+						key.Expr = DeepCopyExpr(scoreKey.Expr)
+					} else {
+						key.Expr.GetCol().RelPos = ctx.projectTag
+					}
+				}
+				sortNode.OrderBy = tc.keys
+			}
+			builder.sqlCalcFoundRows = tc.foundRows
+			limit := makePlan2Uint64ConstExprWithType(200)
+			handled, err := builder.tryApplyCoveredFulltext2(nodeID, projNode, sortNode, scanNode,
+				[]int32{0}, []*plan.IndexDef{idxdef}, []int32{1}, nil,
+				map[int32]int32{0: 0}, limit, nil)
+			require.NoError(t, err)
+			require.True(t, handled)
+			ftnode := findCoveredFulltext2TVF(t, builder)
+			require.Len(t, ftnode.TblFuncExprList, 4)
+			assert.Contains(t, ftnode.TblFuncExprList[3].GetLit().GetSval(), `"op":"is_null"`)
+			if tc.wantLimit == 0 {
+				require.Nil(t, ftnode.Limit)
+			} else {
+				require.NotNil(t, ftnode.Limit)
+				assert.Equal(t, tc.wantLimit, ftnode.Limit.GetLit().GetU64Val())
+			}
+		})
+	}
+}
+
+func TestCoveredFulltext2ScoreLimitOnBoundSQL(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		orderBy    string
+		pagination string
+		wantLimit  uint64
+	}{
+		{name: "ANLI score alias", orderBy: "sc DESC", pagination: "LIMIT 2", wantLimit: 2},
+		{name: "score alias offset", orderBy: "sc DESC", pagination: "LIMIT 2 OFFSET 1", wantLimit: 3},
+		{name: "ascending score", orderBy: "sc ASC", pagination: "LIMIT 2"},
+		{name: "different sort", orderBy: "id DESC", pagination: "LIMIT 2"},
+		{name: "score with second key", orderBy: "sc DESC, id", pagination: "LIMIT 2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			optimizer := newIssue24822FullText2Optimizer()
+			for _, idx := range optimizer.ctx.tables["ft"].Indexes {
+				idx.IncludedColumns = []string{"base_id"}
+			}
+			sql := `SELECT id, MATCH(title, body) AGAINST('hello' IN BOOLEAN MODE) AS sc
+				FROM ft WHERE MATCH(title, body) AGAINST('hello' IN BOOLEAN MODE)
+				AND base_id IS NULL ORDER BY ` + tc.orderBy + ` ` + tc.pagination
+			p, err := runOneStmt(optimizer, t, sql)
+			require.NoError(t, err)
+			var search *plan.Node
+			for _, node := range p.GetQuery().Nodes {
+				if node.NodeType == plan.Node_FUNCTION_SCAN && node.TableDef != nil &&
+					node.TableDef.TblFunc != nil && node.TableDef.TblFunc.Name == fulltext2_search_func_name {
+					search = node
+				}
+			}
+			require.NotNil(t, search)
+			require.Len(t, search.TblFuncExprList, 4)
+			assert.Contains(t, search.TblFuncExprList[3].GetLit().GetSval(), `"op":"is_null"`)
+			if tc.wantLimit != 0 {
+				require.NotNil(t, search.Limit)
+				assert.Equal(t, tc.wantLimit, search.Limit.GetLit().GetU64Val())
+			} else {
+				require.Nil(t, search.Limit)
+			}
+		})
+	}
+}
+
 // findCoveredFulltext2TVF returns the single FUNCTION_SCAN node appended by the rewrite.
 func findCoveredFulltext2TVF(t *testing.T, builder *QueryBuilder) *plan.Node {
 	t.Helper()
