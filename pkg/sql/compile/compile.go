@@ -5752,7 +5752,7 @@ func (c *Compile) compileTableScanDataSource(s *Scope) error {
 	defer c.filterExprMu.Unlock()
 	storageFilters := filterScanStorageExprs(c.proc, node.FilterList)
 	for _, filter := range node.FilterList {
-		if fn := filter.GetF(); fn != nil && fn.Func.ObjName == "prefix_in" {
+		if fn := filter.GetF(); node.ObjRef.SchemaName == "sysbench_db" && fn != nil && fn.Func.ObjName == "prefix_in" {
 			issue29322CompileProbeOnce.Do(func() {
 				logutil.Info("issue29322-compile-probe",
 					zap.String("table", node.TableDef.Name),

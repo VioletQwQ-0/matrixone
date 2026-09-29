@@ -563,7 +563,8 @@ func NewReader(
 		baseFilter.Cleanup()
 		return nil, err
 	}
-	if expr != nil && strings.HasPrefix(tableDef.Name, "__mo_index_secondary_") {
+	if expr != nil && strings.HasPrefix(tableDef.Name, "__mo_index_secondary_") &&
+		expr.GetF() != nil && expr.GetF().Func.ObjName == "prefix_in" {
 		issue29322ReaderProbeOnce.Do(func() {
 			functionName, columnName, rhsKind := "", "", ""
 			vecOid, vecLength, vecHasNulls := "", -1, false
