@@ -2690,6 +2690,7 @@ func (builder *QueryBuilder) replaceEqualCondition(idxDef *IndexDef, filterList 
 		args := expr.GetF().Args
 		args[0].GetCol().RelPos = idxTag
 		args[0].GetCol().ColPos = 0
+		args[0].GetCol().Name = idxTableDef.Cols[0].Name
 		var err error
 		args[1], err = builder.makeIndexLookupPartExpr(idxDef, 0, args[1])
 		if err != nil {
@@ -2729,6 +2730,7 @@ func (builder *QueryBuilder) replaceEqualCondition(idxDef *IndexDef, filterList 
 		funcName = "prefix_eq"
 	}
 	leadingColExpr := GetColExpr(idxTableDef.Cols[0].Typ, idxTag, 0)
+	leadingColExpr.GetCol().Name = idxTableDef.Cols[0].Name
 	expr, err := BindFuncExprImplByPlanExpr(builder.GetContext(), funcName, []*plan.Expr{leadingColExpr, rightArg})
 	if err != nil {
 		return nil, err
@@ -2774,6 +2776,7 @@ func (builder *QueryBuilder) replaceNonEqualCondition(idxDef *IndexDef, filter *
 	indexedPartType := fn.Args[0].Typ
 	fn.Args[0].GetCol().RelPos = idxTag
 	fn.Args[0].GetCol().ColPos = 0
+	fn.Args[0].GetCol().Name = idxTableDef.Cols[0].Name
 	fn.Args[0].Typ = idxTableDef.Cols[0].Typ
 	if numParts > 1 {
 		serialFunc := indexTableComparisonSerialFunc()
@@ -4590,6 +4593,7 @@ func (builder *QueryBuilder) replaceRangePairCondition(idxDef *IndexDef, filterL
 	upperOp := canonicalRangeOp(upperFn)
 
 	colExpr := GetColExpr(idxTableDef.Cols[0].Typ, idxTag, 0)
+	colExpr.GetCol().Name = idxTableDef.Cols[0].Name
 	lowerVal := DeepCopyExpr(rangeFilterConstValue(lowerFn))
 	upperVal := DeepCopyExpr(rangeFilterConstValue(upperFn))
 

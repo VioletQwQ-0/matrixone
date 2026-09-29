@@ -1563,9 +1563,12 @@ func TestIndexJoinBackfillRuntimeFilterUsesBasePrimaryKey(t *testing.T) {
 				ftjColExpr(tableDef, scan.BindingTags[0], tableDef.Name2ColIndex["a"]),
 				makePlan2Int32ConstExprWithType(7))}
 
-			joinID, _ := builder.applyIndexJoin(
+			joinID, indexScanID := builder.applyIndexJoin(
 				indexDef, scan, EqualIndexCondition, []int32{0}, nil)
 			require.NotEqual(t, scanID, joinID)
+			indexScan := builder.qry.Nodes[indexScanID]
+			require.Equal(t, catalog.IndexTableIndexColName,
+				indexScan.FilterList[0].GetF().Args[0].GetCol().Name)
 			join := builder.qry.Nodes[joinID]
 			join.Stats = &planpb.Stats{HashmapStats: &planpb.HashMapStats{HashmapSize: 1, HashOnPK: true}}
 			builder.generateRuntimeFilters(joinID)
@@ -1576,6 +1579,31 @@ func TestIndexJoinBackfillRuntimeFilterUsesBasePrimaryKey(t *testing.T) {
 			require.Equal(t, pkName, probe.Expr.GetCol().Name)
 		})
 	}
+}
+
+func TestNoPKIndexJoinPrefixInNamesIndexTablePrimaryKey(t *testing.T) {
+	builder, _, scanID, tableDef := makeIndexHintJoinBuilder(t)
+	scan := builder.qry.Nodes[scanID]
+	tableDef.Cols = append(tableDef.Cols, &planpb.ColDef{
+		Name: catalog.FakePrimaryKeyColName, Typ: planpb.Type{Id: int32(types.T_uint64)},
+	})
+	tableDef.Name2ColIndex[catalog.FakePrimaryKeyColName] = int32(len(tableDef.Cols) - 1)
+	tableDef.Pkey = &planpb.PrimaryKeyDef{PkeyColName: catalog.FakePrimaryKeyColName}
+	idxDef := tableDef.Indexes[0]
+	idxDef.Parts = []string{"a", catalog.FakePrimaryKeyColName}
+	indexTable := builder.compCtx.(*fullTextJoinMockCompilerContext).tables["idx_join_a_table"]
+	indexTable.Pkey = &planpb.PrimaryKeyDef{PkeyColName: catalog.IndexTableIndexColName}
+	scan.FilterList = []*planpb.Expr{makeParamInFilterExpr(
+		scan.BindingTags[0], tableDef.Name2ColIndex["a"], 10)}
+
+	joinID, indexScanID := builder.applyIndexJoin(
+		idxDef, scan, NonEqualIndexCondition, []int32{0}, nil)
+	require.NotEqual(t, scanID, joinID)
+	indexScan := builder.qry.Nodes[indexScanID]
+	require.Equal(t, "prefix_in", indexScan.FilterList[0].GetF().Func.ObjName)
+	probeCol := indexScan.FilterList[0].GetF().Args[0].GetCol()
+	require.Equal(t, int32(0), probeCol.ColPos)
+	require.Equal(t, indexScan.TableDef.Pkey.PkeyColName, probeCol.Name)
 }
 
 func TestEnumIndexJoinsRemainEligible(t *testing.T) {
