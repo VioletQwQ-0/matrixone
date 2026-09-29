@@ -563,6 +563,14 @@ func NewReader(
 		baseFilter.Cleanup()
 		return nil, err
 	}
+	blockFilter, err := ConstructBlockPKFilter(
+		catalog.IsFakePkName(tableDef.Pkey.PkeyColName),
+		baseFilter,
+		filterHint.BF,
+	)
+	if err != nil {
+		return nil, err
+	}
 	if expr != nil && strings.HasPrefix(tableDef.Name, "__mo_index_secondary_") &&
 		expr.GetF() != nil && expr.GetF().Func.ObjName == "prefix_in" {
 		issue29322ReaderProbeOnce.Do(func() {
@@ -601,17 +609,11 @@ func NewReader(
 				zap.Int("base_vec_length", vecLength),
 				zap.Bool("base_vec_nulls", vecHasNulls),
 				zap.Bool("packer_pool", packerPool != nil),
-				zap.Bool("mem_valid", memFilter.Valid()))
+				zap.Bool("mem_valid", memFilter.Valid()),
+				zap.Bool("block_valid", blockFilter.Valid),
+				zap.Bool("block_sorted_search", blockFilter.SortedSearchFunc != nil),
+				zap.Bool("block_unsorted_search", blockFilter.UnSortedSearchFunc != nil))
 		})
-	}
-
-	blockFilter, err := ConstructBlockPKFilter(
-		catalog.IsFakePkName(tableDef.Pkey.PkeyColName),
-		baseFilter,
-		filterHint.BF,
-	)
-	if err != nil {
-		return nil, err
 	}
 
 	r = &reader{
