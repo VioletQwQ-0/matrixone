@@ -28,6 +28,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -5704,6 +5705,8 @@ func prepareFoldedFilterExprs(
 	return cached, executors, false, nil
 }
 
+var issue29322CompileProbeOnce sync.Once
+
 func (c *Compile) compileTableScanDataSource(s *Scope) error {
 	var err error
 	var tblDef *plan.TableDef
@@ -5748,6 +5751,17 @@ func (c *Compile) compileTableScanDataSource(s *Scope) error {
 	c.filterExprMu.Lock()
 	defer c.filterExprMu.Unlock()
 	storageFilters := filterScanStorageExprs(c.proc, node.FilterList)
+	for _, filter := range node.FilterList {
+		if fn := filter.GetF(); fn != nil && fn.Func.ObjName == "prefix_in" {
+			issue29322CompileProbeOnce.Do(func() {
+				logutil.Info("issue29322-compile-probe",
+					zap.String("table", node.TableDef.Name),
+					zap.Int("raw_filters", len(node.FilterList)),
+					zap.Int("storage_filters", len(storageFilters)))
+			})
+			break
+		}
+	}
 	filters, executors, rebuilt, err := prepareFoldedFilterExprs(
 		c.proc, storageFilters, s.DataSource.FilterList, c.filterExprExes, true)
 	if err != nil {

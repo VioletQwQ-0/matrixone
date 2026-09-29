@@ -22,6 +22,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -515,6 +516,8 @@ func (r *mergeReader) ReadWithFilterAndTopK(
 // -----------------------------------------------------------------
 // NewReader consumes source and filterHint.BF on entry. On success the reader
 // releases them from Close; on construction failure NewReader releases them.
+var issue29322ReaderProbeOnce sync.Once
+
 func NewReader(
 	ctx context.Context,
 	mp *mpool.MPool,
@@ -559,6 +562,46 @@ func NewReader(
 	if err != nil {
 		baseFilter.Cleanup()
 		return nil, err
+	}
+	if expr != nil && strings.HasPrefix(tableDef.Name, "__mo_index_secondary_") {
+		issue29322ReaderProbeOnce.Do(func() {
+			functionName, columnName, rhsKind := "", "", ""
+			vecOid, vecLength, vecHasNulls := "", -1, false
+			foldConst, foldLength := false, -1
+			if fn := expr.GetF(); fn != nil && fn.Func != nil {
+				functionName = fn.Func.ObjName
+				if len(fn.Args) > 0 && fn.Args[0].GetCol() != nil {
+					columnName = fn.Args[0].GetCol().Name
+				}
+				if len(fn.Args) > 1 {
+					rhsKind = fmt.Sprintf("%T", fn.Args[1].Expr)
+					if fold := fn.Args[1].GetFold(); fold != nil {
+						foldConst, foldLength = fold.IsConst, len(fold.Data)
+					}
+				}
+			}
+			if baseFilter.Vec != nil {
+				vecOid = baseFilter.Vec.GetType().Oid.String()
+				vecLength = baseFilter.Vec.Length()
+				vecHasNulls = baseFilter.Vec.GetNulls().Any()
+			}
+			logutil.Info("issue29322-reader-probe",
+				zap.String("table", tableDef.Name),
+				zap.String("pk", tableDef.Pkey.PkeyColName),
+				zap.String("function", functionName),
+				zap.String("column", columnName),
+				zap.String("rhs_kind", rhsKind),
+				zap.Bool("fold_const", foldConst),
+				zap.Int("fold_length", foldLength),
+				zap.Bool("base_valid", baseFilter.Valid),
+				zap.String("base_op", fmt.Sprint(baseFilter.Op)),
+				zap.String("base_oid", baseFilter.Oid.String()),
+				zap.String("base_vec_oid", vecOid),
+				zap.Int("base_vec_length", vecLength),
+				zap.Bool("base_vec_nulls", vecHasNulls),
+				zap.Bool("packer_pool", packerPool != nil),
+				zap.Bool("mem_valid", memFilter.Valid()))
+		})
 	}
 
 	blockFilter, err := ConstructBlockPKFilter(
