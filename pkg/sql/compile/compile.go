@@ -5754,10 +5754,26 @@ func (c *Compile) compileTableScanDataSource(s *Scope) error {
 	for _, filter := range node.FilterList {
 		if fn := filter.GetF(); node.ObjRef.SchemaName == "sysbench_db" && fn != nil && fn.Func.ObjName == "prefix_in" {
 			issue29322CompileProbeOnce.Do(func() {
+				itemFunction, itemArgumentKind := "", ""
+				if len(fn.Args) > 1 {
+					if list := fn.Args[1].GetList(); list != nil && len(list.List) > 0 {
+						if item := list.List[0].GetF(); item != nil {
+							itemFunction = item.Func.ObjName
+							if len(item.Args) > 0 {
+								itemArgumentKind = fmt.Sprintf("%T", item.Args[0].Expr)
+							}
+						}
+					}
+				}
 				logutil.Info("issue29322-compile-probe",
 					zap.String("table", node.TableDef.Name),
 					zap.Int("raw_filters", len(node.FilterList)),
-					zap.Int("storage_filters", len(storageFilters)))
+					zap.Int("storage_filters", len(storageFilters)),
+					zap.Bool("volatile", plan2.ContainsVolatileFunction(filter)),
+					zap.Bool("constant_diagnostic", plan2.ContainsConstantFilterDiagnostic(c.proc, filter)),
+					zap.Bool("statement_diagnostic", plan2.ContainsStatementInvariantFilterDiagnostic(c.proc, filter)),
+					zap.String("first_item_function", itemFunction),
+					zap.String("first_item_argument_kind", itemArgumentKind))
 			})
 			break
 		}
