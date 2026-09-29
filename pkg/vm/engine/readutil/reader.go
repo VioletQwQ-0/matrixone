@@ -22,6 +22,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
@@ -515,6 +516,8 @@ func (r *mergeReader) ReadWithFilterAndTopK(
 // -----------------------------------------------------------------
 // NewReader consumes source and filterHint.BF on entry. On success the reader
 // releases them from Close; on construction failure NewReader releases them.
+var issue29322ReaderCount atomic.Uint64
+
 func NewReader(
 	ctx context.Context,
 	mp *mpool.MPool,
@@ -559,6 +562,24 @@ func NewReader(
 	if err != nil {
 		baseFilter.Cleanup()
 		return nil, err
+	}
+	if tableDef != nil {
+		n := issue29322ReaderCount.Add(1)
+		if n <= 16 || (n <= 100000 && n%1000 == 0) {
+			exprRoot := "none"
+			if expr != nil {
+				exprRoot = "other"
+				if fn := expr.GetF(); fn != nil {
+					exprRoot = fn.Func.ObjName
+				}
+			}
+			logutil.Info("Issue29322-ReaderFilter",
+				zap.String("table", tableDef.Name),
+				zap.String("expr-root", exprRoot),
+				zap.Bool("base-pk-filter-valid", baseFilter.Valid),
+				zap.Bool("mem-pk-filter-valid", memFilter.Valid()),
+				zap.Uint64("reader-sequence", n))
+		}
 	}
 
 	blockFilter, err := ConstructBlockPKFilter(

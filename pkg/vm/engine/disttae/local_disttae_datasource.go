@@ -18,8 +18,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"runtime/pprof"
 	"slices"
+	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -791,7 +794,30 @@ func (ls *LocalDisttaeDataSource) filterInMemUnCommittedInserts(
 	return nil
 }
 
+var issue29322LargeScanCount atomic.Uint64
+
 func (ls *LocalDisttaeDataSource) filterInMemCommittedInserts(
+	ctx context.Context,
+	colTypes []types.Type,
+	seqNums []uint16,
+	mp *mpool.MPool,
+	outBatch *batch.Batch,
+) error {
+	// Temporary diagnostic branch: tag CPU samples with the physical table and
+	// filter state, without logging row values or query keys.
+	labels := pprof.Labels(
+		"mo-table", ls.table.tableName,
+		"mo-mem-pk-filter-valid", strconv.FormatBool(ls.memPKFilter.Valid()),
+	)
+	var err error
+	pprof.Do(ctx, labels, func(profileCtx context.Context) {
+		err = ls.filterInMemCommittedInsertsObserved(
+			profileCtx, colTypes, seqNums, mp, outBatch)
+	})
+	return err
+}
+
+func (ls *LocalDisttaeDataSource) filterInMemCommittedInsertsObserved(
 	ctx context.Context,
 	colTypes []types.Type,
 	seqNums []uint16,
@@ -990,6 +1016,19 @@ func (ls *LocalDisttaeDataSource) filterInMemCommittedInserts(
 		delInFile,
 		outBatch.RowCount()-inputRowCnt,
 	)
+	if scan >= 1000 {
+		n := issue29322LargeScanCount.Add(1)
+		if n <= 16 || (n <= 100000 && n%1000 == 0) {
+			logutil.Info("Issue29322-InMemCommittedScan",
+				zap.String("table", ls.table.tableName),
+				zap.Bool("mem-pk-filter-valid", ls.memPKFilter.Valid()),
+				zap.String("iter-kind", iterKind),
+				zap.Int("scan", scan),
+				zap.Int("inserted", inserted),
+				zap.Int("bf-skipped", bfSkipped),
+				zap.Uint64("large-scan-sequence", n))
+		}
+	}
 
 	return nil
 }
