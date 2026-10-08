@@ -264,6 +264,14 @@ type EngineKey struct{}
 
 // SqlKey use SqlKey{} to get string value from Context
 type SqlKey struct{}
+
+// ReadWorkProbeKey is used only by the diagnostic read-work fork. Ordinary
+// executions never carry it. The immutable value identifies one binary execute.
+type ReadWorkProbeKey struct{}
+type ReadWorkProbe struct {
+	Label     string
+	Execution string
+}
 type DatTypKey struct{}
 type TableIDKey struct{}
 type LogicalIdKey struct{}

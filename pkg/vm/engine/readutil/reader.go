@@ -319,6 +319,7 @@ type reader struct {
 	cacheVectors containers.Vectors
 
 	explainVectorTopStats *objectio.IndexReaderTopStats
+	readWorkProbe         *readWorkProbe
 }
 
 type mergeReader struct {
@@ -586,10 +587,12 @@ func NewReader(
 	r.filterState.memFilter = memFilter
 	r.filterState.hasBF = filterHint.BF != nil && filterHint.BF.Valid()
 	r.threshHold = threshHold
+	r.installReadWorkProbe(ctx, baseFilter)
 	return r, nil
 }
 
 func (r *reader) Close() error {
+	r.finishReadWorkProbe()
 	r.source.Close()
 	r.withFilterMixin.reset()
 	r.explainVectorTopStats = nil
@@ -863,6 +866,14 @@ func (r *reader) read(
 
 	start := time.Now()
 	defer func() {
+		if r.readWorkProbe != nil {
+			if dataState == engine.End && err == nil {
+				r.readWorkProbe.Complete = true
+			}
+			if blkInfo != nil && dataState == engine.Persisted {
+				r.readWorkProbe.endBlock(outBatch.RowCount(), err != nil)
+			}
+		}
 		v2.TxnBlockReaderDurationHistogram.Observe(time.Since(start).Seconds())
 		if err != nil || dataState == engine.End {
 			r.Close()
@@ -1021,6 +1032,9 @@ func (r *reader) read(
 	}
 	if r.explainVectorTopStats != nil {
 		r.explainVectorTopStats.BlocksRead++
+	}
+	if r.readWorkProbe != nil {
+		r.readWorkProbe.beginBlock(blkInfo.BlockID.String())
 	}
 	//read block
 	filter := r.withFilterMixin.filterState.filter

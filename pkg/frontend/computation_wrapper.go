@@ -1307,6 +1307,15 @@ func initExecuteStmtParamWithResolverInSession(
 	// admission, and ownership cleanup. All three must address the same object.
 	execCtx.effectiveTxnDefaultDatabase = prepareStmt.defaultDatabase
 	originSQL := prepareStmt.Sql
+	// Diagnostic fork only: label a bounded, explicitly marked binary execute.
+	// Each cached execution gets its own request-owned identity.
+	if execPlan == nil && execCtx.input != nil && execCtx.input.isBinaryProtExecute {
+		if label := readWorkProbeLabel(originSQL); label != "" {
+			execCtx.reqCtx = context.WithValue(execCtx.reqCtx, defines.ReadWorkProbeKey{},
+				defines.ReadWorkProbe{Label: label, Execution: owner.GetStmtId().String()})
+			reqCtx = execCtx.reqCtx
+		}
+	}
 	preparePlan := prepareStmt.PreparePlan.GetDcl().GetPrepare()
 	executionPlan := preparePlan.Plan
 	groupConcatMaxLenFloor := prepareStmt.groupConcatMaxLenFloor
