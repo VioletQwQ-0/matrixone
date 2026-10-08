@@ -57,7 +57,7 @@ func BenchmarkIssue29322MatcherBlock(b *testing.B) {
 					require.NoError(b, err)
 					b.Cleanup(func() { fs.Close(ctx) })
 					fs.SetAsyncUpdate(false)
-					_, vectors := matcherBenchInputs(b, mp, matcherBenchCase{m, 8192, 1, "one"})
+					values, vectors := matcherBenchInputs(b, mp, matcherBenchCase{m, 8192, 1, "one"})
 					input := batch.NewWithSize(1)
 					input.Vecs[0] = vectors[0]
 					input.SetRowCount(8192)
@@ -75,10 +75,6 @@ func BenchmarkIssue29322MatcherBlock(b *testing.B) {
 					b.Cleanup(func() { output.Clean(mp) })
 					cache := containers.NewVectors(2)
 					b.Cleanup(func() { cache.Free(mp) })
-					values := make([]uint64, m)
-					for i := range values {
-						values[i] = uint64(i*2 + 1)
-					}
 					candidate := matcherBenchVector(b, mp, values)
 					candidate.SetSorted(true)
 					wire, err := candidate.MarshalBinary()
@@ -102,7 +98,7 @@ func BenchmarkIssue29322MatcherBlock(b *testing.B) {
 					require.NoError(b, read())
 					require.NoError(b, read())
 					require.Equal(b, 1, output.RowCount())
-					require.Equal(b, []uint64{1}, vector.MustFixedColNoTypeCheck[uint64](output.Vecs[0]))
+					require.Equal(b, []uint64{values[0]}, vector.MustFixedColNoTypeCheck[uint64](output.Vecs[0]))
 					location := info.MetaLocation()
 					meta, err := objectio.FastLoadObjectMeta(ctx, &location, false, fs)
 					require.NoError(b, err)

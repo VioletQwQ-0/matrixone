@@ -179,6 +179,21 @@ func TestIssue29322MatcherAlgorithms(t *testing.T) {
 			require.Equal(t, matcherBenchOracle(values, rows), matcherBenchFactoryFor(algorithm)(values)(v), "%s M=%d", algorithm, m)
 		}
 	}
+	t.Run("block-key-distribution", func(t *testing.T) {
+		values, blocks := matcherBenchInputs(t, mp, matcherBenchCase{7, 8192, 7, "one"})
+		for block, input := range blocks {
+			rows := vector.MustFixedColNoTypeCheck[uint64](input)
+			require.Equal(t, []int64{int64((block * 127) % len(rows))}, matcherBenchOracle(values, rows))
+			require.Less(t, slices.Min(rows), values[block])
+			require.Greater(t, slices.Max(rows), values[block])
+			if block > 0 {
+				require.Greater(t, slices.Min(rows), values[block-1])
+			}
+			if block+1 < len(values) {
+				require.Less(t, slices.Max(rows), values[block+1])
+			}
+		}
+	})
 }
 
 func TestIssue29322MatcherBorrowedCandidates(t *testing.T) {
@@ -307,18 +322,28 @@ func matcherBenchCases() []matcherBenchCase {
 	return cases
 }
 
-// Identical deterministic inputs for every algorithm. Each primary block has
-// exactly one candidate hit; remaining keys exceed every candidate value.
+// Identical deterministic inputs for every algorithm. Primary blocks span both
+// sides of their own candidate and exactly one row hits. Query-wide candidates
+// span distinct blocks, so binary branches vary across blocks. The explicit miss
+// control retains the all-above-candidates distribution; neither is called a
+// measured concurrent distribution.
 func matcherBenchInputs(t testing.TB, mp *mpool.MPool, c matcherBenchCase) ([]uint64, []*vector.Vector) {
 	values := make([]uint64, c.m)
 	for i := range values {
-		values[i] = uint64(i*2 + 1)
+		values[i] = uint64(i+1)<<40 + 42
 	}
 	vectors := make([]*vector.Vector, c.blocks)
 	for block := range vectors {
 		rows := make([]uint64, c.n)
 		for i := range rows {
 			rows[i] = 1<<63 + uint64((i*4051)%max(1, c.n))
+			if c.hits == "one" && c.m > 0 {
+				offset := (i*4051)%max(1, c.n) - c.n/2
+				if offset >= 0 {
+					offset++ // Reserve the candidate itself for the single hit.
+				}
+				rows[i] = uint64(int64(values[block%c.m]) + int64(offset))
+			}
 			if c.hits == "dense" && c.m > 0 {
 				rows[i] = values[i%c.m]
 			}
