@@ -58,6 +58,19 @@ func ConstructBlockPKFilter(
 	basePKFilter BasePKFilter,
 	bf engine.MembershipFilter,
 ) (f objectio.BlockReadFilter, err error) {
+	return constructBlockPKFilterForMatcher(isFakePK, basePKFilter, bf, nil)
+}
+
+// Experiment-only constructor seam. Public production construction always
+// passes nil; test prototypes can measure the same ownership and wrapping cost
+// without paying for a discarded second matcher. Remove before product delivery.
+func constructBlockPKFilterForMatcher(
+	isFakePK bool, basePKFilter BasePKFilter, bf engine.MembershipFilter,
+	uint64Matcher func([]uint64) func(*vector.Vector) []int64,
+) (f objectio.BlockReadFilter, err error) {
+	if !isFakePK {
+		uint64Matcher = nil
+	}
 	if bf != nil && !bf.Valid() {
 		bf = nil
 	}
@@ -123,7 +136,7 @@ func ConstructBlockPKFilter(
 
 	if basePKFilter.Valid {
 		for idx := range disjuncts {
-			sortedFunc, unsortedFunc, err := buildBlockPKSearchFuncs(disjuncts[idx])
+			sortedFunc, unsortedFunc, err := buildBlockPKSearchFuncsForMatcher(disjuncts[idx], uint64Matcher)
 			if err != nil {
 				return objectio.BlockReadFilter{}, err
 			}
@@ -488,6 +501,17 @@ func buildBlockPKSearchFuncs(
 	unSortedSearchFunc func(*vector.Vector) []int64,
 	err error,
 ) {
+	return buildBlockPKSearchFuncsForMatcher(basePKFilter, nil)
+}
+
+func buildBlockPKSearchFuncsForMatcher(
+	basePKFilter BasePKFilter,
+	uint64Matcher func([]uint64) func(*vector.Vector) []int64,
+) (
+	sortedSearchFunc func(*vector.Vector) []int64,
+	unSortedSearchFunc func(*vector.Vector) []int64,
+	err error,
+) {
 	if !validBlockPKSearchFilter(basePKFilter) {
 		return nil, nil, nil
 	}
@@ -641,7 +665,11 @@ func buildBlockPKSearchFuncs(
 			unSortedSearchFunc = vector.OrderedLinearSearchOffsetByValFactory(vector.MustFixedColNoTypeCheck[uint32](vec), nil)
 		case types.T_uint64:
 			sortedSearchFunc = vector.OrderedBinarySearchOffsetByValFactory(vector.MustFixedColNoTypeCheck[uint64](vec))
-			unSortedSearchFunc = vector.OrderedLinearSearchOffsetByValFactory(vector.MustFixedColNoTypeCheck[uint64](vec), nil)
+			if uint64Matcher == nil {
+				unSortedSearchFunc = vector.OrderedLinearSearchOffsetByValFactory(vector.MustFixedColNoTypeCheck[uint64](vec), nil)
+			} else {
+				unSortedSearchFunc = uint64Matcher(vector.MustFixedColNoTypeCheck[uint64](vec))
+			}
 		case types.T_float32:
 			sortedSearchFunc = vector.OrderedBinarySearchOffsetByValFactory(vector.MustFixedColNoTypeCheck[float32](vec))
 			unSortedSearchFunc = vector.OrderedLinearSearchOffsetByValFactory(vector.MustFixedColNoTypeCheck[float32](vec), nil)
