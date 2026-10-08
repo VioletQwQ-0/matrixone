@@ -310,7 +310,7 @@ func (c matcherBenchCase) name() string {
 
 func matcherBenchCases() []matcherBenchCase {
 	var cases []matcherBenchCase
-	for m := 2; m <= 32; m++ {
+	for m := 2; m <= 33; m++ {
 		cases = append(cases, matcherBenchCase{m, 8192, m, "one"})
 	}
 	for _, m := range []int{0, 1, 2, 5, 13, 64, 256, 1024, 4096} {
