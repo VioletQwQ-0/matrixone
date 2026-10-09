@@ -528,6 +528,24 @@ func NewReader(
 	threshHold uint64,
 	filterHint engine.FilterHint,
 ) (r *reader, err error) {
+	return newReaderForMatcher(ctx, mp, packerPool, fs, tableDef, ts, expr, source, threshHold, filterHint, nil)
+}
+
+// Experiment-only seam: public NewReader retains the original matcher.
+func newReaderForMatcher(
+	ctx context.Context,
+	mp *mpool.MPool,
+	packerPool *fileservice.Pool[*types.Packer],
+	fs fileservice.FileService,
+	tableDef *plan.TableDef,
+	ts timestamp.Timestamp,
+	expr *plan.Expr,
+	//orderedScan bool, // it should be included in filter or expr.
+	source engine.DataSource,
+	threshHold uint64,
+	filterHint engine.FilterHint,
+	uint64Matcher func([]uint64) func(*vector.Vector) []int64,
+) (r *reader, err error) {
 	defer func() {
 		if r != nil {
 			return
@@ -561,10 +579,11 @@ func NewReader(
 		return nil, err
 	}
 
-	blockFilter, err := ConstructBlockPKFilter(
+	blockFilter, err := constructBlockPKFilterForMatcher(
 		catalog.IsFakePkName(tableDef.Pkey.PkeyColName),
 		baseFilter,
 		filterHint.BF,
+		uint64Matcher,
 	)
 	if err != nil {
 		return nil, err
