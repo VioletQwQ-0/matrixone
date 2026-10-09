@@ -16,13 +16,16 @@ package readutil
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand/v2"
 	"os"
 	"slices"
 	"strconv"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/matrixorigin/matrixone/pkg/catalog"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -44,7 +47,11 @@ type matcherBenchFactory func([]uint64) func(*vector.Vector) []int64
 func matcherBenchLinear(values []uint64) func(*vector.Vector) []int64 {
 	return func(v *vector.Vector) []int64 {
 		var offsets []int64
-		for i, row := range vector.MustFixedColNoTypeCheck[uint64](v) {
+		rows := vector.MustFixedColNoTypeCheck[uint64](v)
+		if len(rows) == 0 {
+			return nil
+		}
+		for i, row := range rows {
 			for _, value := range values {
 				if row == value {
 					offsets = append(offsets, int64(i))
@@ -88,13 +95,33 @@ func matcherBenchFactoryFor(algorithm string) matcherBenchFactory {
 		if len(values) == 0 {
 			return func(*vector.Vector) []int64 { return nil }
 		}
+		if len(values) == 1 {
+			value := values[0]
+			return func(v *vector.Vector) []int64 {
+				rows := vector.MustFixedColNoTypeCheck[uint64](v)
+				if len(rows) == 0 {
+					return nil
+				}
+				var offsets []int64
+				for i, row := range rows {
+					if row == value {
+						offsets = append(offsets, int64(i))
+					}
+				}
+				return offsets
+			}
+		}
 		switch algorithm {
 		case "linear":
 			return matcherBenchLinear(values)
 		case "binary":
 			return func(v *vector.Vector) []int64 {
 				var offsets []int64
-				for i, row := range vector.MustFixedColNoTypeCheck[uint64](v) {
+				rows := vector.MustFixedColNoTypeCheck[uint64](v)
+				if len(rows) == 0 {
+					return nil
+				}
+				for i, row := range rows {
 					low, high := 0, len(values)
 					for low < high {
 						mid := low + (high-low)/2
@@ -117,7 +144,11 @@ func matcherBenchFactoryFor(algorithm string) matcherBenchFactory {
 			}
 			return func(v *vector.Vector) []int64 {
 				var offsets []int64
-				for i, row := range vector.MustFixedColNoTypeCheck[uint64](v) {
+				rows := vector.MustFixedColNoTypeCheck[uint64](v)
+				if len(rows) == 0 {
+					return nil
+				}
+				for i, row := range rows {
 					if _, ok := members[row]; ok {
 						offsets = append(offsets, int64(i))
 					}
@@ -319,7 +350,34 @@ func matcherBenchCases() []matcherBenchCase {
 		}
 		cases = append(cases, matcherBenchCase{m, 8192, 1, "dense"}, matcherBenchCase{m, 8192, 32, "one"})
 	}
+	if os.Getenv("MATCHER_BENCH_ORDER") == "reverse" {
+		slices.Reverse(cases)
+	}
 	return cases
+}
+
+// Fixed test-only selectors; groups partition the decision manifest. Diagnostic
+// windows use the same inputs but never contribute to algorithm selection.
+func matcherBenchSelected(c matcherBenchCase, mode string) bool {
+	group := os.Getenv("MATCHER_BENCH_GROUP")
+	switch group {
+	case "", "normal", "empty", "build":
+		actual := "normal"
+		if mode == "search" && c.n == 0 {
+			actual = "empty"
+		}
+		if mode == "reader" && c.n <= 1 {
+			actual = "build"
+		}
+		return group == "" || group == actual
+	case "sentinel":
+		return mode == "reader" && c.n == 8192 && c.blocks == c.m && c.hits == "one" && slices.Contains([]int{2, 5, 7, 8, 9, 11, 13}, c.m)
+	case "diagnostic":
+		return c.n == 8192 && c.blocks == c.m && c.hits == "one" && slices.Contains([]int{2, 5, 13, 26, 27, 33}, c.m) ||
+			c.n <= 1 && c.blocks == 1 && slices.Contains([]int{1, 5, 13}, c.m)
+	default:
+		panic("invalid fixed matcher benchmark group")
+	}
 }
 
 // Identical deterministic inputs for every algorithm. Primary blocks span both
@@ -389,6 +447,9 @@ func BenchmarkIssue29322Matcher(b *testing.B) {
 		b.Run(algorithm, func(b *testing.B) {
 			factory := matcherBenchFactoryFor(algorithm)
 			for _, c := range matcherBenchCases() {
+				if !matcherBenchSelected(c, "search") && !matcherBenchSelected(c, "reader") {
+					continue
+				}
 				b.Run(c.name(), func(b *testing.B) {
 					mp := mpool.MustNewZero()
 					b.Cleanup(func() { mpool.DeleteMPool(mp) })
@@ -397,15 +458,26 @@ func BenchmarkIssue29322Matcher(b *testing.B) {
 					for _, v := range vectors {
 						require.Equal(b, matcherBenchOracle(values, vector.MustFixedColNoTypeCheck[uint64](v)), search(v))
 					}
-					b.Run("search", func(b *testing.B) {
-						b.ReportAllocs()
-						b.ResetTimer()
-						for i := 0; i < b.N; i++ {
-							for _, v := range vectors {
-								matcherBenchSink = len(search(v))
+					if matcherBenchSelected(c, "search") {
+						b.Run("search", func(b *testing.B) {
+							b.ReportAllocs()
+							b.StopTimer()
+							for i := 0; i < matcherBenchWarmCount(); i++ {
+								for _, v := range vectors {
+									matcherBenchSink = len(search(v))
+								}
 							}
-						}
-					})
+							finish := matcherBenchWindow(b)
+							defer finish()
+							b.ResetTimer()
+							b.StartTimer()
+							for i := 0; i < b.N; i++ {
+								for _, v := range vectors {
+									matcherBenchSink = len(search(v))
+								}
+							}
+						})
+					}
 					candidate := matcherBenchVector(b, mp, values)
 					candidate.SetSorted(true)
 					wire, err := candidate.MarshalBinary()
@@ -415,33 +487,135 @@ func BenchmarkIssue29322Matcher(b *testing.B) {
 					b.Cleanup(packer.Close)
 					pool := fileservice.NewPool(1, func() *types.Packer { return packer },
 						func(p *types.Packer) { p.Reset() }, func(p *types.Packer) { p.Close() })
-					b.Run("reader", func(b *testing.B) {
-						b.ReportAllocs()
-						b.ResetTimer()
-						for i := 0; i < b.N; i++ {
-							var selected matcherBenchFactory
-							if algorithm != "generic" {
-								selected = factory
+					if matcherBenchSelected(c, "reader") {
+						b.Run("reader", func(b *testing.B) {
+							b.ReportAllocs()
+							run := func() {
+								var selected matcherBenchFactory
+								if algorithm != "generic" {
+									selected = factory
+								}
+								source := &matcherBenchReaderSource{}
+								reader, err := newReaderForMatcher(context.Background(), mp, pool, nil, table,
+									timestamp.Timestamp{}, expr, source, 0, engine.FilterHint{}, selected)
+								if err != nil {
+									b.Fatal(err)
+								}
+								for _, input := range vectors {
+									matcherBenchSink = len(reader.filterState.filter.UnSortedSearchFunc(containers.Vectors{*input}))
+								}
+								if err := reader.Close(); err != nil {
+									b.Fatal(err)
+								}
+								if !source.closed {
+									b.Fatal("reader failed to close its source")
+								}
+
 							}
-							source := &matcherBenchReaderSource{}
-							reader, err := newReaderForMatcher(context.Background(), mp, pool, nil, table,
-								timestamp.Timestamp{}, expr, source, 0, engine.FilterHint{}, selected)
-							if err != nil {
-								b.Fatal(err)
+							b.StopTimer()
+							for i := 0; i < matcherBenchWarmCount(); i++ {
+								run()
 							}
-							for _, input := range vectors {
-								matcherBenchSink = len(reader.filterState.filter.UnSortedSearchFunc(containers.Vectors{*input}))
+							finish := matcherBenchWindow(b)
+							defer finish()
+							b.ResetTimer()
+							b.StartTimer()
+							for i := 0; i < b.N; i++ {
+								run()
 							}
-							if err := reader.Close(); err != nil {
-								b.Fatal(err)
-							}
-							if !source.closed {
-								b.Fatal("reader failed to close its source")
-							}
-						}
-					})
+						})
+					}
 				})
 			}
 		})
+	}
+}
+
+func matcherBenchWarmCount() int {
+	if os.Getenv("MATCHER_BENCH_WARMED") == "true" {
+		return 100
+	}
+	return 1
+}
+
+func TestIssue29322MatcherV5Boundaries(t *testing.T) {
+	mp := mpool.MustNewZero()
+	t.Cleanup(func() { mpool.DeleteMPool(mp) })
+	for _, rows := range [][]uint64{nil, {0}, {math.MaxUint64, 0, math.MaxUint64}} {
+		v := matcherBenchVector(t, mp, rows)
+		for _, values := range [][]uint64{nil, {0}, {math.MaxUint64}, {3, 1, 2}} {
+			for _, algorithm := range matcherBenchAlgorithms {
+				require.Equal(t, matcherBenchOracle(values, rows), matcherBenchFactoryFor(algorithm)(values)(v))
+			}
+		}
+	}
+	// Exact group partition and fixed diagnostic selection, without timing assertions.
+	for _, c := range matcherBenchCases() {
+		for _, mode := range []string{"search", "reader"} {
+			count := 0
+			for _, group := range []string{"normal", "empty", "build"} {
+				t.Setenv("MATCHER_BENCH_GROUP", group)
+				if matcherBenchSelected(c, mode) {
+					count++
+				}
+			}
+			require.Equal(t, 1, count)
+		}
+	}
+}
+
+// Construction diagnostics are separate from the unchanged decision manifest.
+func BenchmarkIssue29322MatcherBuild(b *testing.B) {
+	for _, algorithm := range matcherBenchBenchmarkAlgorithms() {
+		b.Run(algorithm, func(b *testing.B) {
+			for _, m := range []int{1, 5, 13, 4096} {
+				b.Run(fmt.Sprintf("m%d", m), func(b *testing.B) {
+					mp := mpool.MustNewZero()
+					b.Cleanup(func() { mpool.DeleteMPool(mp) })
+					values, vectors := matcherBenchInputs(b, mp, matcherBenchCase{m, 0, 1, "miss"})
+					candidate := matcherBenchVector(b, mp, values)
+					candidate.SetSorted(true)
+					wire, err := candidate.MarshalBinary()
+					require.NoError(b, err)
+					factory := matcherBenchFactoryFor(algorithm)
+					b.ReportAllocs()
+					finish := matcherBenchWindow(b)
+					defer finish()
+					b.ResetTimer()
+					b.StartTimer()
+					for i := 0; i < b.N; i++ {
+						decoded, err := unmarshalPKInVector(wire)
+						if err != nil {
+							b.Fatal(err)
+						}
+						matcherBenchSink = len(factory(vector.MustFixedColNoTypeCheck[uint64](decoded))(vectors[0]))
+						decoded.Free(mp)
+					}
+				})
+			}
+		})
+	}
+}
+
+// Calibration and scored case windows are logged outside the benchmark timer.
+// Their user/system CPU includes only this process; hardware frequency is not
+// inferred from wall time. Durations carry Go's monotonic clock component.
+func matcherBenchWindow(b *testing.B) func() {
+	b.StopTimer()
+	started := time.Now()
+	var before syscall.Rusage
+	require.NoError(b, syscall.Getrusage(syscall.RUSAGE_SELF, &before))
+	return func() {
+		b.StopTimer()
+		ended := time.Now()
+		var after syscall.Rusage
+		require.NoError(b, syscall.Getrusage(syscall.RUSAGE_SELF, &after))
+		cpu := func(v syscall.Timeval) float64 { return float64(v.Sec) + float64(v.Usec)/1e6 }
+		window := map[string]any{"name": b.Name(), "iterations": b.N, "epoch_start": float64(started.UnixNano()) / 1e9,
+			"wall_seconds": ended.Sub(started).Seconds(), "user_seconds": cpu(after.Utime) - cpu(before.Utime),
+			"system_seconds": cpu(after.Stime) - cpu(before.Stime)}
+		data, err := json.Marshal(window)
+		require.NoError(b, err)
+		fmt.Printf("MATCHER_WINDOW %s\n", data)
 	}
 }

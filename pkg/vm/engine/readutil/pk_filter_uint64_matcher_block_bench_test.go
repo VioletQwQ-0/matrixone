@@ -17,6 +17,7 @@ package readutil
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
@@ -45,6 +46,9 @@ func (*matcherBenchBlockSource) ApplyTombstones(_ context.Context, _ *objectio.B
 // A real cached persisted block consumer, with an unsorted UINT64 fake PK and
 // materialized matching rows. No IVF/top-K path or replacement block-read loop is used.
 func BenchmarkIssue29322MatcherBlock(b *testing.B) {
+	if group := os.Getenv("MATCHER_BENCH_GROUP"); group != "" && group != "normal" {
+		return
+	}
 	for _, algorithm := range matcherBenchBenchmarkAlgorithms() {
 		b.Run(algorithm, func(b *testing.B) {
 			for _, m := range []int{2, 5, 7, 8, 9, 11, 13} {
@@ -110,7 +114,10 @@ func BenchmarkIssue29322MatcherBlock(b *testing.B) {
 					}
 					cached.Release()
 					b.ReportAllocs()
+					finish := matcherBenchWindow(b)
+					defer finish()
 					b.ResetTimer()
+					b.StartTimer()
 					for i := 0; i < b.N; i++ {
 						if err := read(); err != nil {
 							b.Fatal(err)
