@@ -21,6 +21,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"runtime/metrics"
 	"slices"
 	"strconv"
 	"syscall"
@@ -602,8 +603,59 @@ func BenchmarkIssue29322MatcherBuild(b *testing.B) {
 // inferred from wall time. Durations carry Go's monotonic clock component.
 var matcherBenchClock = time.Now()
 
+type matcherBenchGCSnapshot struct {
+	cycles         uint64
+	allocatedBytes uint64
+	cpuSeconds     float64
+}
+
+func matcherBenchReadGC() (matcherBenchGCSnapshot, error) {
+	samples := []metrics.Sample{
+		{Name: "/gc/cycles/total:gc-cycles"},
+		{Name: "/gc/heap/allocs:bytes"},
+		{Name: "/cpu/classes/gc/total:cpu-seconds"},
+	}
+	metrics.Read(samples)
+	if samples[0].Value.Kind() != metrics.KindUint64 || samples[1].Value.Kind() != metrics.KindUint64 || samples[2].Value.Kind() != metrics.KindFloat64 {
+		return matcherBenchGCSnapshot{}, fmt.Errorf("required diagnostic GC metrics unavailable")
+	}
+	return matcherBenchGCSnapshot{samples[0].Value.Uint64(), samples[1].Value.Uint64(), samples[2].Value.Float64()}, nil
+}
+
+func matcherBenchGCDelta(before, after matcherBenchGCSnapshot) (map[string]any, error) {
+	if after.cycles < before.cycles || after.allocatedBytes < before.allocatedBytes || after.cpuSeconds < before.cpuSeconds || math.IsNaN(after.cpuSeconds) || math.IsInf(after.cpuSeconds, 0) || math.IsNaN(before.cpuSeconds) || math.IsInf(before.cpuSeconds, 0) || before.cpuSeconds < 0 {
+		return nil, fmt.Errorf("diagnostic GC counters are invalid or decreased")
+	}
+	return map[string]any{"cycles": after.cycles - before.cycles, "allocated_bytes": after.allocatedBytes - before.allocatedBytes, "cpu_seconds": after.cpuSeconds - before.cpuSeconds, "quality": "PROCESS_COUNTER_DELTA_OUTSIDE_BENCHMARK_TIMER_NOT_HARDWARE_CYCLES"}, nil
+}
+
+func TestIssue29322MatcherGCObservation(t *testing.T) {
+	before, err := matcherBenchReadGC()
+	require.NoError(t, err)
+	after, err := matcherBenchReadGC()
+	require.NoError(t, err)
+	_, err = matcherBenchGCDelta(before, after)
+	require.NoError(t, err)
+	d, err := matcherBenchGCDelta(matcherBenchGCSnapshot{1, 100, 0.2}, matcherBenchGCSnapshot{2, 300, 0.5})
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), d["cycles"])
+	require.Equal(t, uint64(200), d["allocated_bytes"])
+	require.InDelta(t, 0.3, d["cpu_seconds"], 1e-9)
+	for _, invalid := range []matcherBenchGCSnapshot{{0, 300, 0.5}, {2, 99, 0.5}, {2, 300, 0.1}, {2, 300, math.NaN()}, {2, 300, math.Inf(1)}} {
+		_, err = matcherBenchGCDelta(matcherBenchGCSnapshot{1, 100, 0.2}, invalid)
+		require.Error(t, err)
+	}
+}
+
 func matcherBenchWindow(b *testing.B) func() {
 	b.StopTimer()
+	diagnostic := os.Getenv("MATCHER_BENCH_DIAGNOSTIC_GC") == "true"
+	var gcBefore matcherBenchGCSnapshot
+	if diagnostic {
+		var err error
+		gcBefore, err = matcherBenchReadGC()
+		require.NoError(b, err)
+	}
 	started := time.Now()
 	var before syscall.Rusage
 	require.NoError(b, syscall.Getrusage(syscall.RUSAGE_SELF, &before))
@@ -617,6 +669,13 @@ func matcherBenchWindow(b *testing.B) func() {
 			"wall_seconds": ended.Sub(started).Seconds(), "monotonic_start": started.Sub(matcherBenchClock).Seconds(),
 			"monotonic_end": ended.Sub(matcherBenchClock).Seconds(), "user_seconds": cpu(after.Utime) - cpu(before.Utime),
 			"system_seconds": cpu(after.Stime) - cpu(before.Stime)}
+		if diagnostic {
+			gcAfter, err := matcherBenchReadGC()
+			require.NoError(b, err)
+			delta, err := matcherBenchGCDelta(gcBefore, gcAfter)
+			require.NoError(b, err)
+			window["diagnostic_gc"] = delta
+		}
 		data, err := json.Marshal(window)
 		require.NoError(b, err)
 		fmt.Printf("MATCHER_WINDOW %s\n", data)
