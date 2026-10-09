@@ -600,6 +600,8 @@ func BenchmarkIssue29322MatcherBuild(b *testing.B) {
 // Calibration and scored case windows are logged outside the benchmark timer.
 // Their user/system CPU includes only this process; hardware frequency is not
 // inferred from wall time. Durations carry Go's monotonic clock component.
+var matcherBenchClock = time.Now()
+
 func matcherBenchWindow(b *testing.B) func() {
 	b.StopTimer()
 	started := time.Now()
@@ -612,7 +614,8 @@ func matcherBenchWindow(b *testing.B) func() {
 		require.NoError(b, syscall.Getrusage(syscall.RUSAGE_SELF, &after))
 		cpu := func(v syscall.Timeval) float64 { return float64(v.Sec) + float64(v.Usec)/1e6 }
 		window := map[string]any{"name": b.Name(), "iterations": b.N, "epoch_start": float64(started.UnixNano()) / 1e9,
-			"wall_seconds": ended.Sub(started).Seconds(), "user_seconds": cpu(after.Utime) - cpu(before.Utime),
+			"wall_seconds": ended.Sub(started).Seconds(), "monotonic_start": started.Sub(matcherBenchClock).Seconds(),
+			"monotonic_end": ended.Sub(matcherBenchClock).Seconds(), "user_seconds": cpu(after.Utime) - cpu(before.Utime),
 			"system_seconds": cpu(after.Stime) - cpu(before.Stime)}
 		data, err := json.Marshal(window)
 		require.NoError(b, err)
