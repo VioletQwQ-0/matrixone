@@ -61,14 +61,15 @@ var ft2TailSpansSchema = func(u *fulltext2SearchState, proc *process.Process, se
 // positional query, and emits (doc_id, score) rows; the top-k is bounded by the
 // pushed LIMIT, and a pushed-down WHERE prefilter is applied inside the walk.
 type fulltext2SearchState struct {
-	inited       bool
-	tblcfg       fulltext2.TableConfig
-	limit        uint64
-	plannedLimit uint64
-	offset       int
-	filterBytes  []byte // serialized docfilter membership (WHERE-clause prefilter), if any
-	dropFilter   bool   // runtime filter DROP: the build side is empty
-	batch        *batch.Batch
+	inited          bool
+	tblcfg          fulltext2.TableConfig
+	limit           uint64
+	plannedLimit    uint64
+	diagnosticRound uint64
+	offset          int
+	filterBytes     []byte // serialized docfilter membership (WHERE-clause prefilter), if any
+	dropFilter      bool   // runtime filter DROP: the build side is empty
+	batch           *batch.Batch
 
 	// LIMIT (non-streaming) path: SearchInto fills this caller-owned, box-free result — pk
 	// (out.Keys), scores (out.Dists), covered INCLUDE cols (out.Include). Held on the state
@@ -581,6 +582,23 @@ func fulltext2SearchPrepare(proc *process.Process, arg *TableFunction) (tvfState
 
 // start runs one query. argVecs: [0]=cfg(json const), [1]=pattern(varchar).
 func (u *fulltext2SearchState) start(tf *TableFunction, proc *process.Process, nthRow int, analyzer process.Analyzer) (err error) {
+	var diagnostic *ft2QueryDiagnostic
+	if ft2DiagnosticEnabled {
+		u.diagnosticRound++
+		diagnostic = beginFT2Diagnostic(tf, proc, u.plannedLimit, u.diagnosticRound)
+	}
+	asyncDiagnostic := false
+	if diagnostic != nil {
+		defer func() {
+			if !asyncDiagnostic {
+				if v := recover(); v != nil {
+					diagnostic.finish(proc.Ctx, fmt.Errorf("diagnostic: invocation panicked"))
+					panic(v)
+				}
+				diagnostic.finish(proc.Ctx, err)
+			}
+		}()
+	}
 	if !u.inited {
 		cfgVec := tf.ctr.argVecs[0]
 		if cfgVec.GetType().Oid != types.T_varchar || !cfgVec.IsConst() {
@@ -677,6 +695,21 @@ func (u *fulltext2SearchState) start(tf *TableFunction, proc *process.Process, n
 	// the returned top-K is already filtered (no over-fetch).
 	if u.filterBytes == nil && hasFulltextMembershipFilterSpec(tf.RuntimeFilterSpecs) {
 		res, ferr := waitFulltext2MembershipFilter(proc, tf.RuntimeFilterSpecs)
+		if diagnostic != nil {
+			diagnostic.MembershipOutcome = "missing_payload"
+			if ferr != nil {
+				diagnostic.MembershipOutcome = "error"
+			} else if res != nil {
+				switch res.status {
+				case fulltextMembershipFilterReady:
+					diagnostic.MembershipOutcome = "ready"
+				case fulltextMembershipFilterDrop:
+					diagnostic.MembershipOutcome = "drop"
+				case fulltextMembershipFilterPass:
+					diagnostic.MembershipOutcome = "pass_fail_open"
+				}
+			}
+		}
 		if ferr != nil {
 			return ferr
 		}
@@ -751,6 +784,13 @@ func (u *fulltext2SearchState) start(tf *TableFunction, proc *process.Process, n
 		FilterBytes:      u.filterBytes,
 		IncludePredsJSON: includePreds,
 	}
+	if diagnostic != nil {
+		diagnostic.EffectiveLimit = u.limit
+		diagnostic.PredicateHash = ft2DiagnosticHash(includePreds)
+		columns, _ := json.Marshal(u.tblcfg.IncludeColumns)
+		diagnostic.IncludeColumnsHash = ft2DiagnosticHash(columns)
+		q.Diagnostic = &diagnostic.Search
+	}
 
 	// A mandatory json probe against an async index SELF-COMPLETES: after the bulk search this
 	// operator runs table_changes(searched, snapshot] itself and emits the gap pks, bound to the
@@ -770,6 +810,13 @@ func (u *fulltext2SearchState) start(tf *TableFunction, proc *process.Process, n
 	}
 
 	if u.limit == 0 {
+		if diagnostic != nil {
+			diagnostic.Path = "emit"
+			diagnostic.FallbackReason = diagnostic.MembershipOutcome
+			if diagnostic.PlannedLimit == 0 {
+				diagnostic.FallbackReason = "no_planned_limit"
+			}
+		}
 		// No pushed LIMIT: STREAM every matching doc in bounded batches (no top-K heap,
 		// no materialization of the whole result set). A producer goroutine runs the
 		// search with an Emit callback that hands batches to streamCh; call() drains one
@@ -797,10 +844,14 @@ func (u *fulltext2SearchState) start(tf *TableFunction, proc *process.Process, n
 		if u.probeTail {
 			rt.SearchedBuildTS = &u.tailSearchedBuildTS // captured under the cache lock during the search
 		}
+		asyncDiagnostic = true
 		go func() {
 			_, _, serr := veccache.Cache.Search(sp, cacheKey, newsearch, q, rt)
 			u.errCh <- serr // buffered(1): send before close so call() reads it after drain
 			close(u.streamCh)
+			// Observation must not delay the stream drain/reset cancellation path.
+			// This pointer is invocation-local; it never reads the reused u state.
+			diagnostic.finish(ctx, serr)
 		}()
 		return nil
 	}
@@ -810,6 +861,10 @@ func (u *fulltext2SearchState) start(tf *TableFunction, proc *process.Process, n
 	// pooled on the state and Reset per query by SearchInto, so a warm query allocates nothing
 	// for its results; call() pages u.out via u.offset.
 	rt := vectorindex.RuntimeConfig{Limit: uint(u.limit)}
+	if diagnostic != nil {
+		diagnostic.Path = "search_into"
+		diagnostic.FallbackReason = "none"
+	}
 	if len(u.includeNames) > 0 {
 		// Request the covered INCLUDE columns; SearchInto fills u.out.Include (box-free,
 		// column-major, whole result set), which call() pages by segPos.

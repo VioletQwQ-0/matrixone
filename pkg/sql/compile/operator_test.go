@@ -17,6 +17,7 @@ package compile
 import (
 	"context"
 	"math"
+	"os"
 	"testing"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
@@ -58,6 +59,21 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/vm"
 	"github.com/stretchr/testify/require"
 )
+
+func TestConstructFT2DiagnosticPlanPreservesInputs(t *testing.T) {
+	n := &plan.Node{NodeId: 0, NodeType: plan.Node_FUNCTION_SCAN,
+		TableDef: &plan.TableDef{TblFunc: &plan.TableFunction{Name: "fulltext2_search"}}}
+	q := &plan.Query{Nodes: []*plan.Node{n}, Steps: []int32{0}}
+	op := constructTableFunction(n, q)
+	require.Equal(t, n.Limit, op.Limit)
+	require.Equal(t, n.TblFuncExprList, op.Args)
+	require.Empty(t, n.TableDef.TblFunc.Param) // observer never mutates plan Params
+	if os.Getenv("MO_FT2_QUERY_DIAGNOSTIC") == "1" {
+		require.Contains(t, string(op.Params), "ft2-query-plan-v1")
+	} else {
+		require.Empty(t, op.Params)
+	}
+}
 
 func TestDupOperator(t *testing.T) {
 	dupOperator(

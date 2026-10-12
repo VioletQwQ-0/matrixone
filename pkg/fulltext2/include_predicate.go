@@ -78,6 +78,7 @@ var includeOpKinds = map[string]includeCmpKind{
 // INCLUDE column types are the same across an index's segments); includePredMembership binds
 // it to a segment's includeVal.
 type compiledIncludePred struct {
+	diagnostic *PredicateDiagnostic // invocation-local; nil when observation is off
 	col        int
 	kind       includeCmpKind
 	isStr      bool
@@ -478,10 +479,20 @@ func (m *includePredMembership) Contains(ord int64) bool {
 			var err error
 			v, isNull, err = m.seg.includeVal(ord, p.col)
 			if err != nil {
+				if p.diagnostic != nil {
+					p.diagnostic.ReadErrors++
+				}
 				return false // corrupt value ⇒ exclude (safe: a covering fallback JOIN re-checks)
 			}
 		}
-		if !p.test(v, isNull) {
+		passed := p.test(v, isNull)
+		if p.diagnostic != nil {
+			p.diagnostic.Evaluations++
+			if !passed {
+				p.diagnostic.Rejected++
+			}
+		}
+		if !passed {
 			return false
 		}
 	}

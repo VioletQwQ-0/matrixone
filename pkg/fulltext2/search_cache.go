@@ -58,6 +58,7 @@ type Fulltext2Query struct {
 	// values INSIDE the search — so a WHERE on an INCLUDE column needs no second base scan.
 	// nil = none. ANDed with FilterBytes.
 	IncludePredsJSON []byte
+	Diagnostic       *SearchDiagnostic // query-owned, never retained in the cache
 }
 
 // Fulltext2Search adapts a loaded fulltext2 Index to veccache.VectorIndexSearchIf so
@@ -296,6 +297,13 @@ func (s *Fulltext2Search) prepare(proc *sqlexec.SqlProcess, query any, rt vector
 	} else if k <= 0 {
 		k = int(s.idx.NumDocs())
 	}
+	if q.Diagnostic != nil {
+		q.Diagnostic.SearchObserved = true
+		q.Diagnostic.RuntimeLimit = rt.Limit
+		q.Diagnostic.ResolvedK = k
+		q.Diagnostic.Emit = rt.Emit != nil
+		q.Diagnostic.ScoreFilterPresent = q.ScoreRange != nil
+	}
 	if len(q.FilterBytes) > 0 || len(q.IncludePredsJSON) > 0 || q.ScoreRange != nil {
 		pf = &prefilter{scoreRange: q.ScoreRange}
 		if len(q.FilterBytes) > 0 {
@@ -312,6 +320,7 @@ func (s *Fulltext2Search) prepare(proc *sqlexec.SqlProcess, query any, rt vector
 				return
 			}
 			pf.include = preds
+			q.Diagnostic.bindPredicates(preds, s.idx.includeTypes(), s.idx.pkType())
 		}
 	}
 	return
@@ -330,6 +339,11 @@ func (s *Fulltext2Search) runTopK(q Fulltext2Query, k int, pf *prefilter) ([]Res
 	} else {
 		res, err = s.idx.SearchQuery(q.Pattern, q.Boolean, s.cfg.Parser, q.Algo, k, pf)
 	}
+	if q.Diagnostic != nil && err == nil {
+		q.Diagnostic.TopKObserved = true
+		q.Diagnostic.BeforeScoreFilter = len(res)
+		q.Diagnostic.AfterScoreFilter = len(res)
+	}
 	if err != nil || pf == nil || pf.scoreRange == nil {
 		return res, err
 	}
@@ -343,6 +357,9 @@ func (s *Fulltext2Search) runTopK(q Fulltext2Query, k int, pf *prefilter) ([]Res
 		if pf.scoreRange.contains(r.Score) {
 			kept = append(kept, r)
 		}
+	}
+	if q.Diagnostic != nil {
+		q.Diagnostic.AfterScoreFilter = len(kept)
 	}
 	return kept, nil
 }

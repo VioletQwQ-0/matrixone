@@ -1525,6 +1525,7 @@ func constructTableFunction(node *plan.Node, qry *plan.Query) *table_function.Ta
 	// probe side runtime filter specs
 	arg.RuntimeFilterSpecs = node.RuntimeFilterProbeList
 	arg.IndexReaderParam = node.IndexReaderParam
+	table_function.AttachFT2DiagnosticPlan(arg, node, qry)
 	return arg
 }
 
