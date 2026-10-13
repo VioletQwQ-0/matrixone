@@ -12407,3 +12407,149 @@ func TestPreparedCTASCompileRetryPreservesNamesAndParameters(t *testing.T) {
 		require.Contains(t, got.GetDdl().Query.String(), fmt.Sprintf("sval:%q", fmt.Sprint(value)))
 	}
 }
+
+func TestDoComQueryKeepsRetainedStatisticsOwner(t *testing.T) {
+	ctx := defines.AttachAccountId(context.Background(), sysAccountID)
+	ownerRoot := resource.NewRoot(resource.ConnInternal)
+	ctx = resource.ContextWithRoot(ctx, ownerRoot)
+	ctrl := gomock.NewController(t)
+	ses, execCtx := newAnalyzeHandlerTestSession(t, ctrl)
+	defer ses.Close()
+	ses.txnHandler.txnOp.(*mock_frontend.MockTxnOperator).EXPECT().TryEnterRunSqlWithTokenAndSQL(gomock.Any(), gomock.Any()).Return(uint64(0), nil).AnyTimes()
+	ses.SetTenantInfo(nil)
+	ses.SetCmd(COM_QUERY)
+	execCtx.reqCtx = ctx
+	const sql = "set @snapshot_stats = snapshot_token; select 2"
+	stmts, err := parsers.Parse(ctx, dialect.MYSQL, sql, 1)
+	require.NoError(t, err)
+	first := mock_frontend.NewMockComputationWrapper(ctrl)
+	first.EXPECT().GetAst().Return(stmts[0]).AnyTimes()
+	first.EXPECT().Plan().Return(nil).AnyTimes()
+	first.EXPECT().RecordCompoundStmt(gomock.Any(), gomock.Any()).Return(nil)
+	first.EXPECT().Free().Times(1)
+	second := mock_frontend.NewMockComputationWrapper(ctrl)
+	second.EXPECT().GetAst().Return(stmts[1]).AnyTimes()
+	second.EXPECT().Plan().Return(nil).AnyTimes()
+	stopErr := moerr.NewInternalError(ctx, "stop after statistics inspection")
+	var old, current, parseOwner *statistic.StatsInfo
+	var detached statistic.StatsInfo
+	var writer sync.WaitGroup
+	defer writer.Wait()
+	records := 0
+	stubs := gostub.Stub(&RecordStatement, func(c context.Context, _ *Session, _ *process.Process, _ ComputationWrapper, _ time.Time, _, _ string, _ bool) (context.Context, error) {
+		records++
+		s := statistic.StatsInfoFromContext(c)
+		require.Same(t, s, statistic.StatsInfoFromContext(execCtx.proc.GetTopContext()))
+		require.Same(t, ownerRoot, resource.RootFromContext(c))
+		require.NotNil(t, s)
+		if records == 1 {
+			old = s
+			require.Same(t, parseOwner, old)
+			old.AddBuildPlanStatsS3Request(statistic.S3Request{Get: 42})
+			detached = old.Snapshot()
+			_, claimed := old.ClaimRootPhaseResource()
+			require.True(t, claimed)
+		} else {
+			current = s
+			require.NotSame(t, old, current)
+			require.Zero(t, current.Snapshot().PlanStage.BuildPlanStatsS3.Get)
+			_, claimed := old.ClaimRootPhaseResource()
+			require.False(t, claimed)
+			_, claimed = current.ClaimRootPhaseResource()
+			require.True(t, claimed)
+			writer.Add(1)
+			go func() {
+				defer writer.Done()
+				for i := 0; i < 10000; i++ {
+					old.AddBuildPlanStatsS3Request(statistic.S3Request{Get: 1})
+				}
+			}()
+			for i := 0; i < 100; i++ {
+				_, marshalErr := json.Marshal(current.Snapshot())
+				require.NoError(t, marshalErr)
+			}
+			return c, stopErr
+		}
+		return c, nil
+	})
+	defer stubs.Reset()
+	wrapperStubs := gostub.Stub(&GetComputationWrapper, func(*ExecCtx, string, string, engine.Engine, *process.Process, *Session) ([]ComputationWrapper, error) {
+		parseOwner = statistic.StatsInfoFromContext(execCtx.reqCtx)
+		return []ComputationWrapper{first, second}, nil
+	})
+	defer wrapperStubs.Reset()
+	second.EXPECT().Free().Times(1)
+	err = doComQuery(ses, execCtx, &UserInput{sql: sql})
+	require.ErrorContains(t, err, "stop after statistics inspection")
+	writer.Wait()
+	require.Equal(t, 2, records)
+	require.Equal(t, int64(10042), old.Snapshot().PlanStage.BuildPlanStatsS3.Get)
+	require.Zero(t, current.Snapshot().PlanStage.BuildPlanStatsS3.Get)
+	require.Equal(t, int64(42), detached.PlanStage.BuildPlanStatsS3.Get)
+	_, claimed := current.ClaimRootPhaseResource()
+	require.False(t, claimed)
+}
+
+func TestDoComQueryStagedParseErrorHasIndependentStatistics(t *testing.T) {
+	ctx := defines.AttachAccountId(context.Background(), sysAccountID)
+	ctrl := gomock.NewController(t)
+	ses, execCtx := newAnalyzeHandlerTestSession(t, ctrl)
+	defer ses.Close()
+	ses.txnHandler.txnOp.(*mock_frontend.MockTxnOperator).EXPECT().TryEnterRunSqlWithTokenAndSQL(gomock.Any(), gomock.Any()).Return(uint64(0), nil).AnyTimes()
+	ses.SetTenantInfo(nil)
+	ses.SetCmd(COM_QUERY)
+	execCtx.reqCtx = ctx
+	stmts, err := parsers.Parse(ctx, dialect.MYSQL, "set sql_mode=ANSI_QUOTES", 1)
+	require.NoError(t, err)
+	first := mock_frontend.NewMockComputationWrapper(ctrl)
+	first.EXPECT().GetAst().Return(stmts[0]).AnyTimes()
+	first.EXPECT().Plan().Return(nil).AnyTimes()
+	var precedingWork time.Duration
+	var precedingEnd time.Time
+	first.EXPECT().RecordCompoundStmt(gomock.Any(), gomock.Any()).DoAndReturn(func(context.Context, statistic.StatsArray) error {
+		// Work before suffix parsing must not become the suffix parsing charge.
+		start := time.Now()
+		for time.Since(start) < 30*time.Millisecond {
+		}
+		precedingEnd = time.Now()
+		precedingWork = precedingEnd.Sub(start)
+		return nil
+	})
+	first.EXPECT().Free().Times(1)
+	var retained *statistic.StatsInfo
+	var phases statistic.StatsInfo
+	stubs := gostub.Stub(&RecordStatement, func(c context.Context, _ *Session, _ *process.Process, _ ComputationWrapper, _ time.Time, _, _ string, _ bool) (context.Context, error) {
+		retained = statistic.StatsInfoFromContext(c)
+		retained.AddBuildPlanStatsS3Request(statistic.S3Request{Get: 42})
+		phases = retained.Snapshot()
+		_, claimed := retained.ClaimRootPhaseResource()
+		require.True(t, claimed)
+		return c, nil
+	})
+	defer stubs.Reset()
+	parseStubs := gostub.Stub(&RecordParseErrorStatement, func(c context.Context, _ *Session, _ *process.Process, _ time.Time, _, _ []string, _ error) (context.Context, error) {
+		failed := statistic.StatsInfoFromContext(c)
+		require.NotNil(t, retained)
+		require.NotSame(t, retained, failed)
+		require.Same(t, failed, statistic.StatsInfoFromContext(execCtx.proc.GetTopContext()))
+		require.Zero(t, failed.Snapshot().PlanStage.BuildPlanStatsS3.Get)
+		delta, claimed := failed.ClaimRootPhaseResource()
+		require.True(t, claimed)
+		tail := time.Since(precedingEnd)
+		require.GreaterOrEqual(t, precedingWork, 30*time.Millisecond)
+		require.False(t, failed.ParseStage.ParseStartTime.Before(precedingEnd))
+		require.Positive(t, delta.Usage.ExclusiveActiveNS)
+		require.LessOrEqual(t, delta.Usage.ExclusiveActiveNS, uint64(tail.Nanoseconds()))
+		return c, nil
+	})
+	defer parseStubs.Reset()
+	wrapperStubs := gostub.Stub(&GetComputationWrapper, func(*ExecCtx, string, string, engine.Engine, *process.Process, *Session) ([]ComputationWrapper, error) {
+		return []ComputationWrapper{first}, nil
+	})
+	defer wrapperStubs.Reset()
+	err = doComQuery(ses, execCtx, &UserInput{sql: "set sql_mode=ANSI_QUOTES; select from"})
+	require.Error(t, err)
+	require.NotNil(t, retained)
+	require.Equal(t, phases.ParseStage, retained.Snapshot().ParseStage)
+	require.Equal(t, int64(42), retained.Snapshot().PlanStage.BuildPlanStatsS3.Get)
+}

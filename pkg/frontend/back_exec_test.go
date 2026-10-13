@@ -77,6 +77,33 @@ func TestBackSessionInheritsForeignKeyChecks(t *testing.T) {
 	require.Equal(t, int8(0), value)
 }
 
+func TestBackSessionInheritsHnswFeatureGate(t *testing.T) {
+	ctx := context.Background()
+	ses := newFeatureLimitTestSession(t)
+	parent := &backSession{feSessionImpl: feSessionImpl{upstream: ses}}
+	child := &backSession{parentBackSession: parent}
+
+	for _, enabled := range []int64{1, 0, 1} {
+		require.NoError(t, ses.SetSessionSysVar(ctx, "experimental_hnsw_index", enabled))
+		for _, backSes := range []*backSession{parent, child} {
+			value, err := backSes.GetSessionSysVar("EXPERIMENTAL_HNSW_INDEX")
+			require.NoError(t, err)
+			require.Equal(t, int8(enabled), value)
+		}
+	}
+
+	// Independent background sessions keep their executor-default fallback.
+	value, err := (&backSession{}).GetSessionSysVar("experimental_hnsw_index")
+	require.NoError(t, err)
+	require.Nil(t, value)
+	// The feature gate does not change background transaction/SQL-mode overrides.
+	for name, want := range map[string]interface{}{"autocommit": true, "sql_mode": "", "lower_case_table_names": int64(1)} {
+		value, err := child.GetSessionSysVar(name)
+		require.NoError(t, err)
+		require.Equal(t, want, value)
+	}
+}
+
 func TestBackSessionDelegatesWarningRetentionLimit(t *testing.T) {
 	ctx := context.Background()
 	ses := newFeatureLimitTestSession(t)
@@ -158,14 +185,14 @@ func TestExecInFrontendInBackRequiresUpstreamForPreparedStatements(t *testing.T)
 	}
 }
 
-func TestInstallBackExecStatsInfoPreservesRootAndClaimsOnce(t *testing.T) {
+func TestInstallStatementStatsInfoPreservesRootAndClaimsOnce(t *testing.T) {
 	root := resource.NewRoot(resource.ConnInternal)
 	parent := resource.ContextWithRoot(context.Background(), root)
 	start := time.Unix(123, 456)
 	duration := 17 * time.Millisecond
 
-	firstCtx, firstStats := installBackExecStatsInfo(parent, start, duration)
-	secondCtx, secondStats := installBackExecStatsInfo(parent, start, duration)
+	firstCtx, firstStats := installStatementStatsInfo(parent, start, duration)
+	secondCtx, secondStats := installStatementStatsInfo(parent, start, duration)
 
 	if firstStats == secondStats {
 		t.Fatal("successive substatements must use distinct StatsInfo values")
@@ -200,7 +227,7 @@ func TestInstallBackExecStatsInfoPreservesRootAndClaimsOnce(t *testing.T) {
 }
 
 func TestLegacyCompositeStatsProjection(t *testing.T) {
-	ctx, _ := installBackExecStatsInfo(context.Background(), time.Unix(0, 0), 7)
+	ctx, _ := installStatementStatsInfo(context.Background(), time.Unix(0, 0), 7)
 	h := &marshalPlanHandler{isInternalSubStmt: true, query: &plan.Query{Nodes: []*plan.Node{{
 		NodeType:    plan.Node_TABLE_SCAN,
 		TableDef:    &plan.TableDef{Name: "t"},
@@ -216,7 +243,7 @@ func TestLegacyCompositeStatsProjection(t *testing.T) {
 }
 
 func TestTopLevelStatsDoesNotRunLegacyResourceProjection(t *testing.T) {
-	ctx, _ := installBackExecStatsInfo(context.Background(), time.Unix(0, 0), 7)
+	ctx, _ := installStatementStatsInfo(context.Background(), time.Unix(0, 0), 7)
 	h := &marshalPlanHandler{query: &plan.Query{Nodes: []*plan.Node{{
 		NodeType:    plan.Node_TABLE_SCAN,
 		TableDef:    &plan.TableDef{Name: "t"},

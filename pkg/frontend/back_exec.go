@@ -131,7 +131,7 @@ func isBackgroundRestoreSQL(stmt tree.Statement, sql string) bool {
 	}
 }
 
-func installBackExecStatsInfo(
+func installStatementStatsInfo(
 	ctx context.Context,
 	parseStart time.Time,
 	parseDuration time.Duration,
@@ -472,7 +472,7 @@ func doComQueryInBack(
 	// parsing instance for the parse-error path; successful substatements get
 	// their own instances below so their phase accounting is not reused.
 	var parseStatsInfo *statistic.StatsInfo
-	execCtx.reqCtx, parseStatsInfo = installBackExecStatsInfo(statsParentCtx, beginInstant, 0)
+	execCtx.reqCtx, parseStatsInfo = installStatementStatsInfo(statsParentCtx, beginInstant, 0)
 	execCtx.input = input
 
 	proc.Base.SessionInfo.User = userNameOnly
@@ -539,7 +539,7 @@ func doComQueryInBack(
 		// ContextWithStatsInfo preserves the parent context, including its
 		// resource.Root, while allowing compile and execution to claim this
 		// statement's phase resource exactly once.
-		execCtx.reqCtx, _ = installBackExecStatsInfo(
+		execCtx.reqCtx, _ = installStatementStatsInfo(
 			statsParentCtx,
 			beginInstant,
 			time.Duration(ParseDuration.Nanoseconds()/int64(len(cws))),
@@ -1430,6 +1430,16 @@ func (backSes *backSession) GetSessionSysVar(name string) (interface{}, error) {
 			return backSes.parentBackSession.GetSessionSysVar(name)
 		}
 		return int64(process.WarningDiagnosticDefaultRetentionLimit), nil
+	case "experimental_hnsw_index":
+		// Procedure DDL runs through a frontend back session and must see
+		// the caller's feature gate rather than the executor default.
+		if backSes.upstream != nil {
+			return backSes.upstream.GetSessionSysVar(name)
+		}
+		if backSes.parentBackSession != nil {
+			return backSes.parentBackSession.GetSessionSysVar(name)
+		}
+		return nil, nil
 	case "foreign_key_checks", "mo_table_stats.force_update", "mo_table_stats.use_old_impl", "mo_table_stats.reset_update_time":
 		return backSes.upstream.GetSessionSysVar(name)
 	}
