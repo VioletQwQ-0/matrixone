@@ -656,11 +656,23 @@ func matcherBenchWindow(b *testing.B) func() {
 		gcBefore, err = matcherBenchReadGC()
 		require.NoError(b, err)
 	}
+	hardwareFinish := matcherBenchHardwareBegin()
+	hardwareTransferred := false
+	defer func() {
+		if !hardwareTransferred && hardwareFinish != nil {
+			hardwareFinish()
+		}
+	}()
 	started := time.Now()
 	var before syscall.Rusage
 	require.NoError(b, syscall.Getrusage(syscall.RUSAGE_SELF, &before))
+	hardwareTransferred = true
 	return func() {
 		b.StopTimer()
+		var hardware map[string]any
+		if hardwareFinish != nil {
+			hardware = hardwareFinish()
+		}
 		ended := time.Now()
 		var after syscall.Rusage
 		require.NoError(b, syscall.Getrusage(syscall.RUSAGE_SELF, &after))
@@ -675,6 +687,9 @@ func matcherBenchWindow(b *testing.B) func() {
 			delta, err := matcherBenchGCDelta(gcBefore, gcAfter)
 			require.NoError(b, err)
 			window["diagnostic_gc"] = delta
+		}
+		if hardware != nil {
+			window["diagnostic_hardware"] = hardware
 		}
 		data, err := json.Marshal(window)
 		require.NoError(b, err)
