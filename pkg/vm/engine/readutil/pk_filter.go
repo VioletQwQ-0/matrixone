@@ -20,6 +20,7 @@ import (
 	"math"
 
 	"github.com/matrixorigin/matrixone/pkg/common/docfilter"
+	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/common/mpool"
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
@@ -68,8 +69,23 @@ func constructBlockPKFilterForMatcher(
 	isFakePK bool, basePKFilter BasePKFilter, bf engine.MembershipFilter,
 	uint64Matcher func([]uint64) func(*vector.Vector) []int64,
 ) (f objectio.BlockReadFilter, err error) {
+	return constructBlockPKFilterForExperiments(isFakePK, basePKFilter, bf, uint64Matcher, nil)
+}
+
+type uint64RangeMatcherFactory func([]uint64, objectio.ReadFilterSearchFuncType) objectio.ReadFilterRangeSearchFuncType
+
+func constructBlockPKFilterForExperiments(
+	isFakePK bool, basePKFilter BasePKFilter, bf engine.MembershipFilter,
+	uint64Matcher func([]uint64) func(*vector.Vector) []int64,
+	rangeMatcher uint64RangeMatcherFactory,
+) (f objectio.BlockReadFilter, err error) {
+	if uint64Matcher != nil && rangeMatcher != nil {
+		basePKFilter.Cleanup()
+		return f, moerr.NewInvalidInputNoCtx("matcher experiments cannot be combined")
+	}
 	if !isFakePK {
 		uint64Matcher = nil
+		rangeMatcher = nil
 	}
 	if bf != nil && !bf.Valid() {
 		bf = nil
@@ -183,6 +199,12 @@ func constructBlockPKFilterForMatcher(
 			readFilter.SortedSearchFunc = wrapInner(sortedSearchFunc)
 			readFilter.UnSortedSearchFunc = wrapInner(unSortedSearchFunc)
 			readFilter.Valid = true
+			if rangeMatcher != nil && basePKFilter.Valid && basePKFilter.Op == function.IN &&
+				basePKFilter.Oid == types.T_uint64 && basePKFilter.Vec != nil &&
+				basePKFilter.Vec.GetType().Oid == types.T_uint64 && len(basePKFilter.Disjuncts) == 0 {
+				readFilter.UnSortedSearchFuncWithRange = rangeMatcher(
+					vector.MustFixedColWithTypeCheck[uint64](basePKFilter.Vec), readFilter.UnSortedSearchFunc)
+			}
 			return readFilter, nil
 		}
 		// No BF, and no search func constructed from PK, equivalent to "no block filtering"

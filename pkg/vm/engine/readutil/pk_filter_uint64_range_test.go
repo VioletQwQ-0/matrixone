@@ -59,6 +59,50 @@ func matcherBenchRangeSearch(values []uint64, fallback objectio.ReadFilterSearch
 	}
 }
 
+// Metadata is independently produced from rows by the ordinary writer before
+// timing. Each timed call still obtains/validates the range through objectio.
+type matcherRangeMetadata struct {
+	meta objectio.ObjectDataMeta
+	loc  objectio.Location
+}
+
+func (m matcherRangeMetadata) bounds() objectio.Uint64Range {
+	return m.meta.Uint64BlockRange(m.loc, 0)
+}
+
+func matcherBenchPrepareRanges(t testing.TB, mp *mpool.MPool, vectors []*vector.Vector) []matcherRangeMetadata {
+	result := make([]matcherRangeMetadata, len(vectors))
+	if len(vectors) == 0 || vectors[0].Length() == 0 {
+		return result
+	}
+	ctx := context.Background()
+	capacity := toml.ByteSize(8 << 20)
+	fs, err := fileservice.NewLocalFS2(ctx, defines.SharedFileServiceName, t.TempDir(), fileservice.CacheConfig{MemoryCapacity: &capacity}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { fs.Close(ctx) })
+	fs.SetAsyncUpdate(false)
+	writer := ioutil.ConstructWriter(0, []uint16{0}, -1, false, false, fs)
+	for _, v := range vectors {
+		input := batch.NewWithSize(1)
+		input.Vecs[0] = v // borrowed; the input fixture retains its cleanup owner
+		input.SetRowCount(v.Length())
+		_, err = writer.WriteBatch(input)
+		require.NoError(t, err)
+	}
+	_, _, err = writer.Sync(ctx)
+	require.NoError(t, err)
+	stats := writer.GetObjectStats()
+	for i := range vectors {
+		info := stats.ConstructBlockInfo(uint16(i))
+		location := info.MetaLocation()
+		meta, err := objectio.FastLoadObjectMeta(ctx, &location, false, fs)
+		require.NoError(t, err)
+		result[i] = matcherRangeMetadata{meta.MustGetMeta(objectio.SchemaData), append(objectio.Location(nil), location...)}
+		require.Equal(t, vectors[i].GetType().Oid == types.T_uint64, result[i].bounds().Valid)
+	}
+	return result
+}
+
 func TestIssue29322MatcherRangeOracle(t *testing.T) {
 	mp := mpool.MustNewZero()
 	t.Cleanup(func() { require.Zero(t, mp.CurrNB()); mpool.DeleteMPool(mp) })
@@ -121,6 +165,110 @@ func TestIssue29322MatcherRangeResetAndTypeGuard(t *testing.T) {
 	require.NoError(t, r.Close())
 	require.Equal(t, 1, source.closed)
 	require.Equal(t, [2]int{1, 1}, cleanups, "Close after Reset cannot repeat owner cleanup")
+}
+
+func TestIssue29322MatcherRangeOwnedReader(t *testing.T) {
+	mp := mpool.MustNewZero()
+	t.Cleanup(func() { require.Zero(t, mp.CurrNB()); mpool.DeleteMPool(mp) })
+	candidate := matcherBenchVector(t, mp, []uint64{1, 3, 19, 999})
+	wire, err := candidate.MarshalBinary()
+	require.NoError(t, err)
+	table, expr := matcherBenchReaderPlan(wire, 4)
+	packer := types.NewPacker()
+	t.Cleanup(packer.Close)
+	pool := fileservice.NewPool(1, func() *types.Packer { return packer }, func(p *types.Packer) { p.Reset() }, func(p *types.Packer) { p.Close() })
+	input := matcherBenchVector(t, mp, []uint64{19, 3, 19})
+	metadata := matcherBenchPrepareRanges(t, mp, []*vector.Vector{input})
+	for i := 0; i < 2; i++ {
+		source := &matcherBenchReaderSource{}
+		r, err := newReaderForExperiments(context.Background(), mp, pool, nil, table, timestamp.Timestamp{}, expr, source, 0, engine.FilterHint{}, nil, matcherBenchRangeSearch)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, r.Close()) })
+		require.NotNil(t, r.filterState.filter.UnSortedSearchFuncWithRange)
+		require.Equal(t, []int64{0, 1, 2}, r.filterState.filter.UnSortedSearchFuncWithRange(containers.Vectors{*input}, metadata[0].bounds()))
+		r.withFilterMixin.reset()
+		require.Nil(t, r.filterState.filter.UnSortedSearchFuncWithRange)
+		require.NoError(t, r.Close())
+		require.True(t, source.closed)
+	}
+	failedSource := &matcherBenchReaderSource{}
+	_, err = newReaderForExperiments(context.Background(), mp, pool, nil, table, timestamp.Timestamp{}, expr, failedSource, 0, engine.FilterHint{}, matcherBenchFactoryFor("linear"), matcherBenchRangeSearch)
+	require.Error(t, err)
+	require.True(t, failedSource.closed)
+}
+
+type matcherRangeCancelFS struct {
+	fileservice.FileService
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (f *matcherRangeCancelFS) Read(ctx context.Context, _ *fileservice.IOVector) error {
+	f.reads++
+	f.cancel()
+	return ctx.Err()
+}
+
+func TestIssue29322MatcherRangeSnapshotAndInReadCancel(t *testing.T) {
+	ctx := context.Background()
+	mp := mpool.MustNewZero()
+	t.Cleanup(func() { require.Zero(t, mp.CurrNB()); mpool.DeleteMPool(mp) })
+	capacity := toml.ByteSize(1 << 20)
+	fs, err := fileservice.NewLocalFS2(ctx, defines.SharedFileServiceName, t.TempDir(), fileservice.CacheConfig{MemoryCapacity: &capacity}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { fs.Close(ctx) })
+	fs.SetAsyncUpdate(false)
+	input := batch.NewWithSize(2)
+	input.Vecs[0] = matcherBenchVector(t, mp, []uint64{19, 3, 19})
+	input.Vecs[1] = vector.NewOffHeapVecWithType(objectio.TSType)
+	t.Cleanup(func() { input.Vecs[1].Free(mp) })
+	for _, physical := range []int64{2, 4, 6} {
+		require.NoError(t, vector.AppendFixed(input.Vecs[1], types.BuildTS(physical, 0), false, mp))
+	}
+	input.SetRowCount(3)
+	writer := ioutil.ConstructWriter(0, []uint16{0, objectio.SEQNUM_COMMITTS}, -1, false, false, fs)
+	writer.SetAppendable()
+	_, err = writer.WriteBatch(input)
+	require.NoError(t, err)
+	_, _, err = writer.Sync(ctx)
+	require.NoError(t, err)
+	stats := writer.GetObjectStats(objectio.WithAppendable())
+	info := stats.ConstructBlockInfo(0)
+	candidate := matcherBenchVector(t, mp, []uint64{3, 19})
+	filter, err := constructBlockPKFilterForExperiments(true, BasePKFilter{Valid: true, Op: function.IN, Oid: types.T_uint64, Vec: candidate}, nil, nil, matcherBenchRangeSearch)
+	require.NoError(t, err)
+	filter.UnSortedSearchFuncWithRange = func(containers.Vectors, objectio.Uint64Range) []int64 {
+		t.Fatal("appendable data must retain snapshot fallback")
+		return nil
+	}
+	columns, typs := []uint16{0}, []types.Type{types.T_uint64.ToType()}
+	for _, cancelRead := range []bool{false, true} {
+		func() {
+			output := batch.NewWithSize(1)
+			output.Vecs[0] = vector.NewOffHeapVecWithType(typs[0])
+			defer output.Clean(mp)
+			cache := containers.NewVectors(3)
+			defer cache.Free(mp)
+			readCtx := ctx
+			var service fileservice.FileService = fs
+			var observed *matcherRangeCancelFS
+			if cancelRead {
+				cancelCtx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				readCtx = cancelCtx
+				observed = &matcherRangeCancelFS{FileService: fs, cancel: cancel}
+				service = observed
+			}
+			err := blockio.BlockDataRead(readCtx, &info, &matcherRangeBlockSource{}, columns, typs, -1, types.BuildTS(5, 0).ToTimestamp(), columns, typs, filter, nil, 0, "range-snapshot", output, cache, mp, service)
+			if cancelRead {
+				require.ErrorIs(t, err, context.Canceled)
+				require.Positive(t, observed.reads)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, []uint64{19, 3}, vector.MustFixedColWithTypeCheck[uint64](output.Vecs[0]))
+			}
+		}()
+	}
 }
 
 type matcherRangeBlockSource struct {
@@ -262,6 +410,68 @@ func TestIssue29322MatcherRangePersistedConsumer(t *testing.T) {
 				}
 				output.Clean(mp)
 				cache.Free(mp)
+			}
+		})
+	}
+}
+
+// These controls supplement the unchanged 197 keys. Their metadata is produced
+// from independent rows, never from candidate values.
+func matcherBenchRangeControls(b *testing.B) {
+	for _, algorithm := range []string{"generic", "range"} {
+		b.Run(algorithm, func(b *testing.B) {
+			for _, mode := range []string{"no_reduction", "empty_subset", "overlap", "missing", "wrong_type", "unsorted"} {
+				b.Run("control_"+mode, func(b *testing.B) {
+					mp := mpool.MustNewZero()
+					b.Cleanup(func() { mpool.DeleteMPool(mp) })
+					values := []uint64{1, 3, 19, 999}
+					switch mode {
+					case "no_reduction":
+						values = []uint64{3, 8, 13, 19}
+					case "empty_subset":
+						values = []uint64{0, 999}
+					case "unsorted":
+						values = []uint64{19, 3, 999}
+					}
+					input := matcherBenchVector(b, mp, []uint64{19, 3, 13, 3, 8})
+					metadata := matcherBenchPrepareRanges(b, mp, []*vector.Vector{input})[0]
+					if mode == "missing" {
+						metadata = matcherRangeMetadata{}
+					}
+					if mode == "wrong_type" {
+						wrong := vector.NewOffHeapVecWithType(types.T_int64.ToType())
+						b.Cleanup(func() { wrong.Free(mp) })
+						require.NoError(b, vector.AppendFixedList(wrong, []int64{3, 19}, nil, mp))
+						metadata = matcherBenchPrepareRanges(b, mp, []*vector.Vector{wrong})[0]
+					}
+					candidate := matcherBenchVector(b, mp, values)
+					var selected uint64RangeMatcherFactory
+					if algorithm == "range" {
+						selected = matcherBenchRangeSearch
+					}
+					run := func() []int64 {
+						filter, err := constructBlockPKFilterForExperiments(true, BasePKFilter{Valid: true, Op: function.IN, Oid: types.T_uint64, Vec: candidate}, nil, nil, selected)
+						if err != nil {
+							b.Fatal(err)
+						}
+						if filter.Cleanup != nil {
+							defer filter.Cleanup()
+						}
+						if filter.UnSortedSearchFuncWithRange != nil {
+							return filter.UnSortedSearchFuncWithRange(containers.Vectors{*input}, metadata.bounds())
+						}
+						return filter.UnSortedSearchFunc(containers.Vectors{*input})
+					}
+					require.Equal(b, matcherBenchOracle(values, vector.MustFixedColWithTypeCheck[uint64](input)), run())
+					b.ReportAllocs()
+					finish := matcherBenchWindow(b)
+					defer finish()
+					b.ResetTimer()
+					b.StartTimer()
+					for i := 0; i < b.N; i++ {
+						matcherBenchSink = len(run())
+					}
+				})
 			}
 		})
 	}

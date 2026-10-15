@@ -525,6 +525,24 @@ func newReaderForMatcher(
 	filterHint engine.FilterHint,
 	uint64Matcher func([]uint64) func(*vector.Vector) []int64,
 ) (r *reader, err error) {
+	return newReaderForExperiments(ctx, mp, packerPool, fs, tableDef, ts, expr, source,
+		threshHold, filterHint, uint64Matcher, nil)
+}
+
+func newReaderForExperiments(
+	ctx context.Context,
+	mp *mpool.MPool,
+	packerPool *fileservice.Pool[*types.Packer],
+	fs fileservice.FileService,
+	tableDef *plan.TableDef,
+	ts timestamp.Timestamp,
+	expr *plan.Expr,
+	source engine.DataSource,
+	threshHold uint64,
+	filterHint engine.FilterHint,
+	uint64Matcher func([]uint64) func(*vector.Vector) []int64,
+	rangeMatcher uint64RangeMatcherFactory,
+) (r *reader, err error) {
 	defer func() {
 		if r != nil {
 			return
@@ -558,11 +576,12 @@ func newReaderForMatcher(
 		return nil, err
 	}
 
-	blockFilter, err := constructBlockPKFilterForMatcher(
+	blockFilter, err := constructBlockPKFilterForExperiments(
 		catalog.IsFakePkName(tableDef.Pkey.PkeyColName),
 		baseFilter,
 		filterHint.BF,
 		uint64Matcher,
+		rangeMatcher,
 	)
 	if err != nil {
 		return nil, err

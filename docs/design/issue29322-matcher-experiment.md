@@ -1,4 +1,4 @@
-# Issue29322: frozen-T matcher experiment, revision 1
+# Issue29322: frozen-T matcher experiment, revision 2
 
 Owner: issue #29322. Experimental source branch only; no production PR or algorithm selected.
 Base T: c3c458159523242bf84e3249ef8c28f22b631d9b. Tool PR241 remains Draft.
@@ -50,3 +50,34 @@ Real block tests use a few persisted UINT64 rows and the existing local file-ser
 ## Design decision
 
 Complexity triggers: internal cross-package contract and material hot path. Risk:R3 for optional block metadata/reader boundary, R1 for unchanged test-only algorithms/hardware fixtures. The plan authorizes the experiment; code/review quality is assessed before delivery. Existing error/cleanup owners remain unchanged; new callback is stateless and bounded. Design revision1 approved for experimental implementation, not production or performance acceptance. Any required mutable state, extra IO or public activation invalidates this decision and requires re-review.
+
+## Revision 2: personal Linux validation and measured range construction
+
+The user authorized correctness and component measurements on personal Ubuntu
+100.89.164.105. All 129 use remains paused. No database, full data preparation,
+system policy changes, production activation or TPS acceptance is in scope.
+
+The range factory must be installed by the internal experimental constructor,
+using the actual owned decoded candidate vector and original generic fallback.
+Public constructors pass no factory. Admission is limited to one UINT64 IN fake-PK
+predicate without membership/disjunction. Range and specialized factories cannot
+be combined. Existing cleanup owners and failed-constructor cleanup stay intact.
+
+The original 197 keys/inputs remain unchanged. The range variant prepares real
+persisted metadata from the input rows outside the benchmark timer; empty row
+fixtures have unavailable metadata. Each timed search obtains and validates its
+block range through the same scalar helper. Reader timing includes candidate
+decode, original filter construction, actual-order check, ranges and Close.
+The seven persisted block keys use normal BlockDataRead metadata and loading.
+Additional fixed metadata controls supplement, never replace, the 197 keys.
+
+Native run38720663071 passed named range consumers and readutil owning tests;
+objectio fixture compilation failed and blockio owning did not run. The fixture
+fix and revised full T-to-subject fingerprint require complete hosted validation.
+Personal execution uses the native runtime closure, one pinned logical CPU,
+GOMAXPROCS=1/GOMEMLIMIT=512MiB, user systemd 4GiB/zero swap/256 tasks and an
+independent bounded watchdog. No sudo/linger/governor/perf permission changes.
+Exact-run release is required before the next stage. Original stability/197/5+10
+rules remain; unavailable original metrology permits DIAGNOSTIC_ONLY reporting.
+All ranges/CPU/TPS claims remain separate. This revision is approved for inactive
+experimental implementation and personal-host admission, not product delivery.

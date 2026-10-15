@@ -33,6 +33,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/container/types"
 	"github.com/matrixorigin/matrixone/pkg/container/vector"
 	"github.com/matrixorigin/matrixone/pkg/fileservice"
+	"github.com/matrixorigin/matrixone/pkg/objectio"
 	"github.com/matrixorigin/matrixone/pkg/pb/plan"
 	"github.com/matrixorigin/matrixone/pkg/pb/timestamp"
 	"github.com/matrixorigin/matrixone/pkg/sql/plan/function"
@@ -437,6 +438,9 @@ func matcherBenchReaderPlan(wire []byte, count int) (*plan.TableDef, *plan.Expr)
 var matcherBenchSink int
 
 func matcherBenchBenchmarkAlgorithms() []string {
+	if os.Getenv("MATCHER_BENCH_RANGE") == "true" {
+		return []string{"generic", "range"}
+	}
 	if os.Getenv("MATCHER_BENCH_LARGE") != "" {
 		return []string{"generic", "hybrid"}
 	}
@@ -446,7 +450,11 @@ func matcherBenchBenchmarkAlgorithms() []string {
 func BenchmarkIssue29322Matcher(b *testing.B) {
 	for _, algorithm := range matcherBenchBenchmarkAlgorithms() {
 		b.Run(algorithm, func(b *testing.B) {
-			factory := matcherBenchFactoryFor(algorithm)
+			factoryName := algorithm
+			if algorithm == "range" {
+				factoryName = "generic"
+			}
+			factory := matcherBenchFactoryFor(factoryName)
 			for _, c := range matcherBenchCases() {
 				if !matcherBenchSelected(c, "search") && !matcherBenchSelected(c, "reader") {
 					continue
@@ -456,13 +464,42 @@ func BenchmarkIssue29322Matcher(b *testing.B) {
 					b.Cleanup(func() { mpool.DeleteMPool(mp) })
 					values, vectors := matcherBenchInputs(b, mp, c)
 					search := factory(values)
-					for _, v := range vectors {
-						require.Equal(b, matcherBenchOracle(values, vector.MustFixedColNoTypeCheck[uint64](v)), search(v))
+					var ranges []matcherRangeMetadata
+					var rangeSearch objectio.ReadFilterRangeSearchFuncType
+					if algorithm == "range" {
+						ranges = matcherBenchPrepareRanges(b, mp, vectors)
+						rangeSearch = matcherBenchRangeSearch(values, func(v containers.Vectors) []int64 { return search(&v[0]) })
+					}
+					searchBlock := func(index int, v *vector.Vector) []int64 {
+						if rangeSearch != nil {
+							return rangeSearch(containers.Vectors{*v}, ranges[index].bounds())
+						}
+						return search(v)
+					}
+					for index, v := range vectors {
+						require.Equal(b, matcherBenchOracle(values, vector.MustFixedColNoTypeCheck[uint64](v)), searchBlock(index, v))
 					}
 					if matcherBenchSelected(c, "search") {
 						b.Run("search", func(b *testing.B) {
 							b.ReportAllocs()
 							b.StopTimer()
+							if rangeSearch != nil {
+								for i := 0; i < matcherBenchWarmCount(); i++ {
+									for index, v := range vectors {
+										matcherBenchSink = len(rangeSearch(containers.Vectors{*v}, ranges[index].bounds()))
+									}
+								}
+								finish := matcherBenchWindow(b)
+								defer finish()
+								b.ResetTimer()
+								b.StartTimer()
+								for i := 0; i < b.N; i++ {
+									for index, v := range vectors {
+										matcherBenchSink = len(rangeSearch(containers.Vectors{*v}, ranges[index].bounds()))
+									}
+								}
+								return
+							}
 							for i := 0; i < matcherBenchWarmCount(); i++ {
 								for _, v := range vectors {
 									matcherBenchSink = len(search(v))
@@ -512,6 +549,25 @@ func BenchmarkIssue29322Matcher(b *testing.B) {
 									b.Fatal("reader failed to close its source")
 								}
 
+							}
+							if algorithm == "range" {
+								run = func() {
+									source := &matcherBenchReaderSource{}
+									reader, err := newReaderForExperiments(context.Background(), mp, pool, nil, table,
+										timestamp.Timestamp{}, expr, source, 0, engine.FilterHint{}, nil, matcherBenchRangeSearch)
+									if err != nil {
+										b.Fatal(err)
+									}
+									if reader.filterState.filter.UnSortedSearchFuncWithRange == nil {
+										b.Fatal("range constructor was not admitted")
+									}
+									for index, input := range vectors {
+										matcherBenchSink = len(reader.filterState.filter.UnSortedSearchFuncWithRange(containers.Vectors{*input}, ranges[index].bounds()))
+									}
+									if err := reader.Close(); err != nil || !source.closed {
+										b.Fatal("range reader close failed", err)
+									}
+								}
 							}
 							b.StopTimer()
 							for i := 0; i < matcherBenchWarmCount(); i++ {

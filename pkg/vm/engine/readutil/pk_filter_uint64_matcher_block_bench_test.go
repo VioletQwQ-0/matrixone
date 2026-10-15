@@ -46,6 +46,10 @@ func (*matcherBenchBlockSource) ApplyTombstones(_ context.Context, _ *objectio.B
 // A real cached persisted block consumer, with an unsorted UINT64 fake PK and
 // materialized matching rows. No IVF/top-K path or replacement block-read loop is used.
 func BenchmarkIssue29322MatcherBlock(b *testing.B) {
+	if os.Getenv("MATCHER_BENCH_RANGE_CONTROLS") == "true" {
+		matcherBenchRangeControls(b)
+		return
+	}
 	if group := os.Getenv("MATCHER_BENCH_GROUP"); group != "" && group != "normal" {
 		return
 	}
@@ -89,10 +93,13 @@ func BenchmarkIssue29322MatcherBlock(b *testing.B) {
 							return err
 						}
 						var selected matcherBenchFactory
-						if algorithm != "generic" {
+						var selectedRange uint64RangeMatcherFactory
+						if algorithm == "range" {
+							selectedRange = matcherBenchRangeSearch
+						} else if algorithm != "generic" {
 							selected = matcherBenchFactoryFor(algorithm)
 						}
-						filter, err := constructBlockPKFilterForMatcher(true, BasePKFilter{Valid: true, Op: function.IN, Oid: types.T_uint64, Vec: decoded}, nil, selected)
+						filter, err := constructBlockPKFilterForExperiments(true, BasePKFilter{Valid: true, Op: function.IN, Oid: types.T_uint64, Vec: decoded}, nil, selected, selectedRange)
 						if err != nil {
 							return err
 						}
