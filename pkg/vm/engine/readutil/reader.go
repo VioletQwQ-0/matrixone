@@ -308,6 +308,8 @@ type withFilterMixin struct {
 }
 
 type reader struct {
+	issue29322ProbeID      uint64
+	issue29322ProbeBlockID *string // diagnostic only; never a performance subject
 	withFilterMixin
 
 	source engine.DataSource
@@ -570,7 +572,11 @@ func NewReader(
 		return nil, err
 	}
 
+	blockID := new(string)
+	probeID := issue29322AttachReaderProbe(ctx, &blockFilter, tableDef, baseFilter, blockID)
+
 	r = &reader{
+		issue29322ProbeID: probeID, issue29322ProbeBlockID: blockID,
 		withFilterMixin: withFilterMixin{
 			fs:         fs,
 			ts:         ts,
@@ -818,6 +824,16 @@ func (r *reader) read(
 
 	var dataState engine.DataState
 	var blkInfo *objectio.BlockInfo
+	probeBeforeBlocks := r.readBlockCnt
+	probeFilterValid := r.filterState.filter.Valid
+	probeGotNext := false
+	probeBlockID := ""
+	var probeMetadataRows uint32
+	defer func() {
+		if r.issue29322ProbeID != 0 {
+			r.issue29322ObserveRead(ctx, dataState, probeGotNext, probeBlockID, probeMetadataRows, r.readBlockCnt-probeBeforeBlocks, outBatch.RowCount(), probeFilterValid, isEnd, err != nil)
+		}
+	}()
 
 	start := time.Now()
 	defer func() {
@@ -930,6 +946,13 @@ func (r *reader) read(
 		outBatch)
 
 	dataState = state
+	if r.issue29322ProbeID != 0 {
+		probeGotNext = true
+		if err == nil && state == engine.Persisted && blkInfo != nil {
+			probeBlockID = blkInfo.BlockID.String()
+			probeMetadataRows = blkInfo.MetaLocation().Rows()
+		}
+	}
 
 	if err != nil {
 		return false, false, err
@@ -981,6 +1004,10 @@ func (r *reader) read(
 		r.explainVectorTopStats.BlocksRead++
 	}
 	//read block
+	if r.issue29322ProbeBlockID != nil {
+		*r.issue29322ProbeBlockID = blkInfo.BlockID.String()
+	}
+	r.issue29322ObserveBlockMetadata(ctx, blkInfo, r.fs, r.filterState.seqnums, r.filterState.colTypes)
 	filter := r.withFilterMixin.filterState.filter
 
 	statsCtx, numRead, numHit := ctx, int64(0), int64(0)

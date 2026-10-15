@@ -234,6 +234,10 @@ var RecordStatement = func(ctx context.Context, ses *Session, proc *process.Proc
 	// telemetry can retain it.
 	text = redactStatementTextForLogging(nil, text)
 	ses.SetStmtId(stmID)
+	if cw != nil && ses.GetCmd() == COM_STMT_EXECUTE {
+		binary, _ := cw.BinaryExecute()
+		issue29322ObserveExecute(ses.GetConnectionID(), stmID.String(), text, binary)
+	}
 	stmtTyp := getStatementType(statement).GetStatementType()
 	queryTyp := getStatementType(statement).GetQueryType()
 	ses.SetStmtType(stmtTyp)

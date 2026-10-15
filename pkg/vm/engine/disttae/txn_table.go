@@ -2616,6 +2616,7 @@ func (tbl *txnTable) BuildReaders(
 			return nil, err
 		}
 
+		issue29322ObserveReaderAssociation(proc, def, rd)
 		rds = append(rds, rd)
 	}
 

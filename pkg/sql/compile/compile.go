@@ -5570,6 +5570,7 @@ func (c *Compile) compileTableScanDataSource(s *Scope) error {
 	s.DataSource.IndexReaderParam = node.IndexReaderParam
 	s.DataSource.RecvMsgList = node.RecvMsgList
 
+	c.issue29322ObserveScan(node, storageFilters, s.DataSource.FilterList, s.DataSource.BlockFilterList)
 	return nil
 }
 
