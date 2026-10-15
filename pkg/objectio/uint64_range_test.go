@@ -26,7 +26,7 @@ import (
 func uint64RangeFixture(t *testing.T) (ObjectDataMeta, Location) {
 	meta := BuildMetaData(2, 3)
 	location := NewRandomLocation(1, 3)
-	copy(meta.BlockHeader().ShortName()[:], location.ShortName())
+	copy(meta.BlockHeader().ShortName()[:], location.ShortName()[:])
 	for id := uint32(0); id < 2; id++ {
 		block := meta.GetBlockMeta(id)
 		block.ColumnMeta(2).setDataType(uint8(types.T_uint64))
