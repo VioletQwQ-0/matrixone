@@ -75,6 +75,28 @@ func ReadDataByFilter(
 	stats *objectio.IndexReaderTopStats,
 	policy fileservice.Policy,
 ) (sels []int64, err error) {
+	return readDataByFilter(ctx, tableName, info, ds, columns, colTypes, ts, searchFunc,
+		cachedSearch, cachedSearchSorted, cacheVectors, mp, fs, stats, policy, nil)
+}
+
+func readDataByFilter(
+	ctx context.Context,
+	tableName string,
+	info *objectio.BlockInfo,
+	ds engine.DataSource,
+	columns []uint16,
+	colTypes []types.Type,
+	ts types.TS,
+	searchFunc objectio.ReadFilterSearchFuncType,
+	cachedSearch *objectio.ReadFilterSearch,
+	cachedSearchSorted bool,
+	cacheVectors containers.Vectors,
+	mp *mpool.MPool,
+	fs fileservice.FileService,
+	stats *objectio.IndexReaderTopStats,
+	policy fileservice.Policy,
+	rangeSearch objectio.ReadFilterRangeSearchFuncType,
+) (sels []int64, err error) {
 	if cachedSearch != nil {
 		cacheVectors.Free(mp)
 		var visibilityTS *types.TS
@@ -100,7 +122,13 @@ func ReadDataByFilter(
 			stats.StorageFilterInputRows += uint64(info.MetaLocation().Rows())
 		}
 	} else {
-		deleteMask, release, readErr := readBlockData(
+		var metadata objectio.ObjectDataMeta
+		var metadataOut *objectio.ObjectDataMeta
+		if rangeSearch != nil && !info.IsAppendable() && len(columns) == 1 &&
+			len(colTypes) == 1 && colTypes[0].Oid == types.T_uint64 {
+			metadataOut = &metadata
+		}
+		deleteMask, release, readErr := readBlockDataWithMeta(
 			ctx,
 			columns,
 			colTypes,
@@ -111,6 +139,7 @@ func ReadDataByFilter(
 			cacheVectors,
 			mp,
 			fs,
+			metadataOut,
 		)
 		if readErr != nil {
 			return nil, readErr
@@ -121,7 +150,11 @@ func ReadDataByFilter(
 		if stats != nil && len(cacheVectors) > 0 {
 			stats.StorageFilterInputRows += uint64(cacheVectors[0].Length())
 		}
-		sels = searchFunc(cacheVectors)
+		if metadataOut != nil {
+			sels = rangeSearch(cacheVectors, metadata.Uint64BlockRange(info.MetaLocation(), columns[0]))
+		} else {
+			sels = searchFunc(cacheVectors)
+		}
 		if !deleteMask.IsEmpty() {
 			sels = removeIf(sels, func(i int64) bool {
 				return deleteMask.Contains(uint64(i))
@@ -409,7 +442,11 @@ func blockDataRead(
 	}
 
 	if searchFunc != nil {
-		if sels, err = ReadDataByFilter(
+		rangeSearch := filter.UnSortedSearchFuncWithRange
+		if !filter.HasFakePK {
+			rangeSearch = nil
+		}
+		if sels, err = readDataByFilter(
 			ctx,
 			tableName,
 			info,
@@ -425,6 +462,7 @@ func blockDataRead(
 			fs,
 			topStats,
 			policy,
+			rangeSearch,
 		); err != nil {
 			return err
 		}
@@ -2018,6 +2056,27 @@ func readBlockData(
 	release func(),
 	err error,
 ) {
+	return readBlockDataWithMeta(ctx, colIndexes, colTypes, phyAddrColumnPos, info,
+		ts, policy, cacheVectors, m, fs, nil)
+}
+
+func readBlockDataWithMeta(
+	ctx context.Context,
+	colIndexes []uint16,
+	colTypes []types.Type,
+	phyAddrColumnPos int,
+	info *objectio.BlockInfo,
+	ts types.TS,
+	policy fileservice.Policy,
+	cacheVectors containers.Vectors,
+	m *mpool.MPool,
+	fs fileservice.FileService,
+	metadata *objectio.ObjectDataMeta,
+) (
+	deleteMask objectio.Bitmap,
+	release func(),
+	err error,
+) {
 	cacheVectors.Free(m)
 
 	idxes, typs := excludePhyAddrColumn(colIndexes, colTypes, phyAddrColumnPos)
@@ -2032,9 +2091,19 @@ func readBlockData(
 			return
 		}
 
-		release, _, err2 = ioutil.LoadColumns(
-			ctx, cols, typs, fs, info.MetaLocation(), cacheVectors2, m, policy,
-		)
+		if metadata == nil {
+			release, _, err2 = ioutil.LoadColumns(
+				ctx, cols, typs, fs, info.MetaLocation(), cacheVectors2, m, policy,
+			)
+		} else {
+			var loaded objectio.ObjectDataMeta
+			loaded, release, _, err2 = ioutil.LoadColumnsData(
+				ctx, cols, typs, fs, info.MetaLocation(), cacheVectors2, m, policy,
+			)
+			if err2 == nil {
+				*metadata = loaded
+			}
+		}
 		return
 	}
 

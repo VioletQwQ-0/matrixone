@@ -49,6 +49,9 @@ type ColumnMetaFetcher interface {
 
 type ReadFilterSearchFuncType func(containers.Vectors) []int64
 
+// ReadFilterRangeSearchFuncType consumes copied bounds, never borrowed metadata.
+type ReadFilterRangeSearchFuncType func(containers.Vectors, Uint64Range) []int64
+
 type readFilterSearchKind uint8
 
 const readFilterLinearKeys = 8
@@ -252,9 +255,11 @@ type BlockReadFilter struct {
 	ExactMembership    bool
 	SortedSearchFunc   ReadFilterSearchFuncType
 	UnSortedSearchFunc ReadFilterSearchFuncType
-	CachedSearch       *ReadFilterSearch
-	CachedMembership   *ReadFilterMembership
-	Cleanup            func() // Cleanup function to release resources (e.g., reusableTempVec)
+	// Experiment-only opt-in. Public constructors leave this nil.
+	UnSortedSearchFuncWithRange ReadFilterRangeSearchFuncType
+	CachedSearch                *ReadFilterSearch
+	CachedMembership            *ReadFilterMembership
+	Cleanup                     func() // Cleanup function to release resources (e.g., reusableTempVec)
 }
 
 func (f BlockReadFilter) DecideSearchFunc(isSortedBlk bool) ReadFilterSearchFuncType {
