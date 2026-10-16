@@ -468,6 +468,9 @@ type includePredMembership struct {
 
 func (m *includePredMembership) Contains(ord int64) bool {
 	for i := range m.preds {
+		if m.seg.diagnostics != nil {
+			m.seg.diagnostics.IncludeEvaluations++
+		}
 		p := &m.preds[i]
 		var v any
 		var isNull bool

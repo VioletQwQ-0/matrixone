@@ -34,8 +34,11 @@ import (
 // session var). The parser is a fixed property of the index (carried in cfg), so it
 // is NOT part of the per-query payload — the same cached index serves every query.
 type Fulltext2Query struct {
-	Pattern []byte
-	Boolean bool
+	// Diagnostics is optional, caller-owned and local to this invocation. It is
+	// never retained on the cache entry and must be nil for timing samples.
+	Diagnostics *SearchDiagnostics
+	Pattern     []byte
+	Boolean     bool
 	// BagOfWords is IN BM25 MODE: ranked bag-of-words retrieval (each token an OR
 	// term, no positional phrase), so it works on a POSITION_FREE index. Takes
 	// precedence over Boolean.
@@ -319,16 +322,24 @@ func (s *Fulltext2Search) prepare(proc *sqlexec.SqlProcess, query any, rt vector
 
 // runTopK dispatches the bounded top-k search (ranked bag-of-words vs positional query).
 func (s *Fulltext2Search) runTopK(q Fulltext2Query, k int, pf *prefilter) ([]Result, error) {
+	idx := s.idx.diagnosticView(q.Diagnostics)
+	if d := q.Diagnostics; d != nil {
+		d.SearchCalls++
+		d.EffectiveLimit = uint64(k)
+		if pf != nil {
+			d.IncludePredicates = uint64(len(pf.include))
+		}
+	}
 	var (
 		res []Result
 		err error
 	)
 	if q.JSONProbe {
-		res, err = s.idx.SearchJSONProbe(q.Pattern, q.Algo, k, pf)
+		res, err = idx.SearchJSONProbe(q.Pattern, q.Algo, k, pf)
 	} else if q.BagOfWords {
-		res, err = s.idx.SearchBagOfWords(q.Pattern, s.cfg.Parser, q.Algo, k, pf)
+		res, err = idx.SearchBagOfWords(q.Pattern, s.cfg.Parser, q.Algo, k, pf)
 	} else {
-		res, err = s.idx.SearchQuery(q.Pattern, q.Boolean, s.cfg.Parser, q.Algo, k, pf)
+		res, err = idx.SearchQuery(q.Pattern, q.Boolean, s.cfg.Parser, q.Algo, k, pf)
 	}
 	if err != nil || pf == nil || pf.scoreRange == nil {
 		return res, err

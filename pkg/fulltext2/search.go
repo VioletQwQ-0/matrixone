@@ -139,6 +139,9 @@ type phraseSlot struct {
 // — only 1-2 char CJK runs — takes the materialize fallback (which handles the presence-
 // only prefix union).
 func (s *Segment) matchPhrase(slots []phraseSlot) []docTf {
+	if s.diagnostics != nil {
+		s.diagnostics.PhraseCalls++
+	}
 	if len(slots) < 2 {
 		return s.matchPhraseFallback(slots)
 	}
@@ -246,7 +249,7 @@ func (s *Segment) slotPostings(sl phraseSlot, single bool) ([]int64, [][]int32, 
 		if !ok {
 			return nil, nil, false
 		}
-		return pl.materializeDocIDs(), pl.materializePositions(), true
+		return pl.materializeDocIDs(s.diagnostics), pl.materializePositions(s.diagnostics), true
 	}
 	if single {
 		docs, err := s.unionDocIDs(sl.term)
@@ -272,7 +275,7 @@ func (s *Segment) unionDocIDs(prefix string) ([]int64, error) {
 		if bset == nil {
 			bset = make([]uint64, (s.N+63)/64)
 		}
-		for _, ord := range pl.materializeDocIDs() {
+		for _, ord := range pl.materializeDocIDs(s.diagnostics) {
 			bset[ord>>6] |= uint64(1) << (uint64(ord) & 63)
 			any = true
 		}
@@ -302,8 +305,8 @@ func (s *Segment) unionDocIDs(prefix string) ([]int64, error) {
 func (s *Segment) mergeStarPostings(prefix string) ([]int64, [][]int32, error) {
 	m := make(map[int64][]int32)
 	err := s.forEachPrefixPosting(prefix, func(_ string, pl *termPostings) {
-		docs := pl.materializeDocIDs()
-		pos := pl.materializePositions()
+		docs := pl.materializeDocIDs(s.diagnostics)
+		pos := pl.materializePositions(s.diagnostics)
 		for di, ord := range docs {
 			m[ord] = append(m[ord], pos[di]...)
 		}
@@ -341,24 +344,26 @@ func sortedIndexInt64(a []int64, v int64) int {
 // intersection, decoding ONE docID block + ONE position block at a time (never the whole
 // list). It is the phrase analogue of wandIter, but also carries the block's positions.
 type phraseCursor struct {
-	tp        *termPostings
-	off       int32      // this slot's byte offset within the phrase
-	idx       int        // current global posting index (0..df-1)
-	curDocBlk int        // block currently decoded into bDocs (-1 = none)
-	curPosBlk int        // block currently decoded into bPos (-1 = none)
-	blen      int        // valid entries in bDocs
-	bDocs     []int64    // decoded docIDs of curDocBlk (cap BlockSize); backed by buf
-	bPos      [][]int32  // decoded positions of curPosBlk (cap BlockSize); backed by buf
-	buf       *phraseBuf // pooled backing for bDocs/bPos; returned by releasePhraseCursors
+	diagnostics *SearchDiagnostics
+	tp          *termPostings
+	off         int32      // this slot's byte offset within the phrase
+	idx         int        // current global posting index (0..df-1)
+	curDocBlk   int        // block currently decoded into bDocs (-1 = none)
+	curPosBlk   int        // block currently decoded into bPos (-1 = none)
+	blen        int        // valid entries in bDocs
+	bDocs       []int64    // decoded docIDs of curDocBlk (cap BlockSize); backed by buf
+	bPos        [][]int32  // decoded positions of curPosBlk (cap BlockSize); backed by buf
+	buf         *phraseBuf // pooled backing for bDocs/bPos; returned by releasePhraseCursors
 }
 
-func newPhraseCursor(tp *termPostings, off int32) *phraseCursor {
+func newPhraseCursor(tp *termPostings, off int32, diagnostics ...*SearchDiagnostics) *phraseCursor {
 	b := getPhraseBuf()
 	return &phraseCursor{
 		tp: tp, off: off, curDocBlk: -1, curPosBlk: -1,
-		bDocs: b.docs,
-		bPos:  b.pos,
-		buf:   b,
+		bDocs:       b.docs,
+		bPos:        b.pos,
+		buf:         b,
+		diagnostics: firstDiagnostic(diagnostics),
 	}
 }
 
@@ -370,7 +375,7 @@ func (c *phraseCursor) ensureDocBlock(b int) {
 	if b == c.curDocBlk {
 		return
 	}
-	c.blen = c.tp.fillBlockDocs(b, c.bDocs)
+	c.blen = c.tp.fillBlockDocs(b, c.bDocs, c.diagnostics)
 	c.curDocBlk = b
 }
 
@@ -380,7 +385,7 @@ func (c *phraseCursor) ensurePositionBlock(b int) {
 	if b == c.curPosBlk {
 		return
 	}
-	c.tp.fillBlockPositions(b, c.bPos)
+	c.tp.fillBlockPositions(b, c.bPos, c.diagnostics)
 	c.curPosBlk = b
 }
 
@@ -438,7 +443,7 @@ func (s *Segment) matchPhraseCursor(slots []phraseSlot) []docTf {
 		if !ok {
 			return nil // a slot no doc satisfies ⇒ the phrase can't occur
 		}
-		cursors[i] = newPhraseCursor(pl, sl.off)
+		cursors[i] = newPhraseCursor(pl, sl.off, s.diagnostics)
 		if pl.df() < cursors[rare].tp.df() {
 			rare = i
 		}
@@ -510,6 +515,9 @@ func idfSquared(n int64, df int) float64 {
 
 // scoreTerm scores one (tf, idf², doc) contribution under the active algorithm.
 func (s *Segment) scoreTerm(algo ScoreAlgo, tf, idf2 float64, ord int64, avgDocLen float64) float32 {
+	if s.diagnostics != nil {
+		s.diagnostics.ScoreContributions++
+	}
 	if algo == BM25 {
 		return float32(idf2 * bm25Factor(tf, s.docLen[ord], avgDocLen))
 	}

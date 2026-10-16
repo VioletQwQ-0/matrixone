@@ -561,6 +561,9 @@ func (s *Segment) decodePostings(ranking, blocks, positions []byte) error {
 // Returns (nil,false) on a corrupt/out-of-bounds entry (defense-in-depth on already-CRC'd
 // data).
 func (s *Segment) decodeTermEntry(off int) (*termPostings, bool) {
+	if s.diagnostics != nil {
+		s.diagnostics.DirectoryEntries++
+	}
 	r := s.ranking
 	if off < 0 || off >= len(r) {
 		return nil, false
@@ -613,6 +616,10 @@ func (s *Segment) decodeTermEntry(off int) (*termPostings, bool) {
 	tp.blockMinDocLn = make([]int32, nblk)
 	tp.blockOff = make([]int64, nblk+1)    // byte offsets RELATIVE to this term's blockData
 	tp.blockPosOff = make([]int64, nblk+1) // byte offsets RELATIVE to this term's posRaw
+	if d := s.diagnostics; d != nil {
+		d.DirectoryBlocks += uint64(nblk)
+		d.DirectorySliceBytes += uint64(nblk)*29 + 16 // 3 int64 arrays, uint8, int32; two end offsets
+	}
 	var prevLast int64
 	var cb, cpos uint64
 	for b := 0; b < nblk; b++ {
@@ -718,6 +725,9 @@ func (s *Segment) LookupLoaded(term string) (*termPostings, bool) {
 	if s.dict == nil {
 		return nil, false
 	}
+	if s.diagnostics != nil {
+		s.diagnostics.FSTLookups++
+	}
 	off, ok, err := s.dict.get(term) // V6: the FST value is the entry's byte offset in ranking
 	if err != nil || !ok || off >= uint64(len(s.ranking)) {
 		return nil, false
@@ -736,6 +746,9 @@ func (s *Segment) lookupLoadedDF(term string) (int, bool) {
 	if s.dict == nil {
 		return 0, false
 	}
+	if s.diagnostics != nil {
+		s.diagnostics.FSTLookups++
+	}
 	off, ok, err := s.dict.get(term)
 	if err != nil || !ok {
 		return 0, false
@@ -747,6 +760,9 @@ func (s *Segment) lookupLoadedDF(term string) (int, bool) {
 // kept separate from the FST lookup so the header parse itself remains a
 // trivially allocation-free operation. The FST's byte-key conversion is unchanged.
 func (s *Segment) termDFAt(off uint64) (int, bool) {
+	if s.diagnostics != nil {
+		s.diagnostics.DFHeaderReads++
+	}
 	if off >= uint64(len(s.ranking)) {
 		return 0, false
 	}

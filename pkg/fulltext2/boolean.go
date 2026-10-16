@@ -114,10 +114,19 @@ func (s *Segment) SearchBoolean(q BoolQuery, algo ScoreAlgo, k int, allow Member
 		return nil, nil
 	}
 	if terms, ok := conjunctiveTerms(q); ok {
+		if s.diagnostics != nil {
+			s.diagnostics.ConjunctiveSegments++
+		}
 		return s.searchConjunctiveTerms(terms, algo, k, allow, gs), nil
 	}
 	if terms, ok := disjunctiveTerms(q); ok {
+		if s.diagnostics != nil {
+			s.diagnostics.WANDSegments++
+		}
 		return s.searchWAND(terms, algo, k, allow, gs), nil
+	}
+	if s.diagnostics != nil {
+		s.diagnostics.BooleanFullSegments++
 	}
 	return s.searchBooleanFull(q, algo, k, allow, gs)
 }
@@ -169,7 +178,7 @@ func (s *Segment) searchConjunctiveTerms(clauses []clause, algo ScoreAlgo, k int
 		if !ok || pl.df() == 0 {
 			return nil
 		}
-		it := newWandIter(pl)
+		it := newWandIter(pl, s.diagnostics)
 		it.idf2 = gs.idfFor(s, term, pl)
 		si := len(states)
 		states = append(states, conjunctiveTermState{it: it})
@@ -226,6 +235,9 @@ func (s *Segment) searchConjunctiveTerms(clauses []clause, algo ScoreAlgo, k int
 		}
 
 		var score float32
+		if s.diagnostics != nil {
+			s.diagnostics.ScoredCandidates++
+		}
 		for i, c := range clauses {
 			it := states[clauseTermState[i]].it
 			score += c.weight * s.scoreTerm(algo, float64(it.tf()), it.idf2, doc, avgDocLen)
@@ -281,6 +293,9 @@ func (s *Segment) evalBoolean(q BoolQuery, algo ScoreAlgo, allow Membership, gs 
 	}
 
 	admit := func(ord int) {
+		if s.diagnostics != nil {
+			s.diagnostics.ScoredCandidates++
+		}
 		if mustNot.get(ord) || !allowed(allow, int64(ord)) { // WHERE prefilter (nil = allow all)
 			return
 		}
@@ -367,7 +382,7 @@ func (s *Segment) evalClauseInto(c clause, algo ScoreAlgo, avgDocLen float64, gs
 		if !ok {
 			return nil
 		}
-		docs := pl.materializeDocIDs()
+		docs := pl.materializeDocIDs(s.diagnostics)
 		if !scored {
 			for _, ord := range docs {
 				emit(ord, 0)
@@ -375,7 +390,7 @@ func (s *Segment) evalClauseInto(c clause, algo ScoreAlgo, avgDocLen float64, gs
 			return nil
 		}
 		idf2 := gs.idfFor(s, c.terms[0], pl)
-		tfs := pl.materializeTfs()
+		tfs := pl.materializeTfs(s.diagnostics)
 		for i, ord := range docs {
 			emit(ord, w*s.scoreTerm(algo, float64(tfs[i]), idf2, ord, avgDocLen))
 		}
@@ -423,7 +438,7 @@ func (s *Segment) evalClause(c clause, algo ScoreAlgo, avgDocLen float64, gs *gl
 	switch c.kind {
 	case clauseTerm:
 		if pl, ok := s.lookup(c.terms[0]); ok {
-			docs := pl.materializeDocIDs()
+			docs := pl.materializeDocIDs(s.diagnostics)
 			if !scored {
 				for _, ord := range docs {
 					raw[ord] = 0
@@ -431,7 +446,7 @@ func (s *Segment) evalClause(c clause, algo ScoreAlgo, avgDocLen float64, gs *gl
 				break
 			}
 			idf2 := gs.idfFor(s, c.terms[0], pl)
-			tfs := pl.materializeTfs()
+			tfs := pl.materializeTfs(s.diagnostics)
 			for i, ord := range docs {
 				// tf-aware BM25 (real within-doc occurrence count). Classic fulltext scores
 				// boolean matches with tf≡1, but ONLY because its SQL retrieval collapses
@@ -464,7 +479,7 @@ func (s *Segment) evalClause(c clause, algo ScoreAlgo, avgDocLen float64, gs *gl
 	case clausePrefix:
 		err := s.forEachPrefixPosting(c.terms[0], func(t string, pl *termPostings) {
 			// Combined impact = MAX over expanded terms (§6).
-			docs := pl.materializeDocIDs()
+			docs := pl.materializeDocIDs(s.diagnostics)
 			if !scored {
 				for _, ord := range docs {
 					raw[ord] = 0
@@ -472,7 +487,7 @@ func (s *Segment) evalClause(c clause, algo ScoreAlgo, avgDocLen float64, gs *gl
 				return
 			}
 			idf2 := gs.idfFor(s, t, pl)
-			tfs := pl.materializeTfs()
+			tfs := pl.materializeTfs(s.diagnostics)
 			for i, ord := range docs {
 				sc := s.scoreTerm(algo, float64(tfs[i]), idf2, ord, avgDocLen)
 				if cur, seen := raw[ord]; !seen || sc > cur {

@@ -160,7 +160,7 @@ func (idx *Index) isLive(si int, ord int64) bool {
 // A nil liveness bitmap proves that the segment is fully live, so its raw posting
 // count is exact without touching compressed blocks. Dirty loaded segments decode
 // one docID block at a time and never materialize the full posting list.
-func (idx *Index) liveTermDF(si int, p *termPostings) int {
+func (idx *Index) liveTermDF(si int, p *termPostings, diagnostics ...*SearchDiagnostics) int {
 	live := idx.liveOrd[si]
 	if live == nil {
 		return p.df()
@@ -178,7 +178,7 @@ func (idx *Index) liveTermDF(si int, p *termPostings) int {
 
 	var docs [BlockSize]int64
 	for b := 0; b < p.nblk(); b++ {
-		n := p.fillBlockDocs(b, docs[:])
+		n := p.fillBlockDocs(b, docs[:], firstDiagnostic(diagnostics))
 		for _, ord := range docs[:n] {
 			if ord >= 0 && ord < int64(len(live)) && live[ord] {
 				df++
@@ -219,6 +219,9 @@ func (idx *Index) SearchPhrase(slots []phraseSlot, algo ScoreAlgo, k int, filter
 			}
 			df++ // distinct live phrase match (filter-independent, matches the old dfSet)
 			if allowed(allow, h.ord) {
+				if seg.diagnostics != nil {
+					seg.diagnostics.ScoredCandidates++
+				}
 				partial := seg.scoreTerm(algo, float64(h.tf), 1.0, h.ord, idx.globalAvgDocLen)
 				tk.push(seg.pk(h.ord), partial, seg.decodeInclude(h.ord))
 			}
@@ -411,7 +414,7 @@ func (gs *globalStats) df(term string) int {
 			continue
 		}
 		if pl, ok := seg.lookup(term); ok {
-			d += gs.idx.liveTermDF(si, pl)
+			d += gs.idx.liveTermDF(si, pl, seg.diagnostics)
 		}
 	}
 	gs.dfCache[term] = d

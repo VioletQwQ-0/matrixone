@@ -753,6 +753,8 @@ func (u *reader) start() (err error) {
 		FilterBytes:      u.filterBytes,
 		IncludePredsJSON: includePreds,
 	}
+	diagnostic := u.beginSearchDiagnostic(&q)
+	defer func() { diagnostic.finish(err, proc.Ctx.Err() != nil) }()
 
 	// A mandatory json probe against an async index SELF-COMPLETES: after the bulk search this
 	// reader runs table_changes(searched, snapshot] itself and emits the gap pks, bound to the

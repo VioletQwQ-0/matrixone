@@ -245,6 +245,64 @@ func TestCoveredFulltext2ScoreLimitOnBoundSQL(t *testing.T) {
 	}
 }
 
+// The ANLI client uses PyMySQL's text protocol: %s is interpolated before the
+// statement reaches MO. Q1 and the first Q3 stage send this same score alias,
+// SHOULD query, NULL eligibility and literal Top200 shape.
+func TestCoveredFulltext2ANLIQueryStages(t *testing.T) {
+	for _, include := range []bool{false, true} {
+		t.Run(map[bool]string{false: "B residual eligibility", true: "C covered eligibility"}[include], func(t *testing.T) {
+			optimizer := newIssue24822FullText2Optimizer(t)
+			def := optimizer.ctx.tables["ft"]
+			def.Cols = []*plan.ColDef{
+				{Name: "md5_id", Typ: plan.Type{Id: int32(types.T_varchar), Width: 255}},
+				{Name: "question", Typ: plan.Type{Id: int32(types.T_text)}},
+				{Name: "answer", Typ: plan.Type{Id: int32(types.T_json)}},
+				{Name: "allow_access", Typ: plan.Type{Id: int32(types.T_varchar), Width: 511}},
+				{Name: "allow_identities", Typ: plan.Type{Id: int32(types.T_varchar), Width: 512}},
+				{Name: "content_type", Typ: plan.Type{Id: int32(types.T_varchar), Width: 255}},
+				{Name: "delete_flag", Typ: plan.Type{Id: int32(types.T_int32)}},
+			}
+			def.Name2ColIndex = make(map[string]int32, len(def.Cols))
+			for i, col := range def.Cols {
+				def.Name2ColIndex[col.Name] = int32(i)
+			}
+			def.Pkey = &plan.PrimaryKeyDef{PkeyColName: "md5_id", Names: []string{"md5_id"}}
+			for _, index := range def.Indexes {
+				index.Parts = []string{"question"}
+				index.IndexAlgoParams = `{"parser":"ngram"}`
+				if include {
+					index.IncludedColumns = []string{"delete_flag"}
+				}
+			}
+			for _, pattern := range []string{"中国 人民", "中国 alpha", "alpha beta"} {
+				p, err := runOneStmt(optimizer, t, "SELECT md5_id, MATCH(question) AGAINST ('"+pattern+"' IN BOOLEAN MODE) AS vec_dist FROM ft WHERE MATCH(question) AGAINST ('"+pattern+"' IN BOOLEAN MODE) AND delete_flag IS NULL ORDER BY vec_dist DESC LIMIT 200")
+				require.NoError(t, err)
+				var scans []*plan.Node
+				for _, n := range p.GetQuery().Nodes {
+					if isFulltext2SearchScan(n) {
+						scans = append(scans, n)
+					}
+				}
+				require.Len(t, scans, 1)
+				if include {
+					require.NotNil(t, fulltextScanLimit(scans[0]))
+					require.EqualValues(t, 200, fulltextScanLimit(scans[0]).GetLit().GetU64Val())
+					opts, err := ft2plan.DecodeScanOptions(scans[0].IndexSearchScan.AlgoOptions)
+					require.NoError(t, err)
+					require.Contains(t, opts.IncludePreds, `"op":"is_null"`)
+				} else {
+					require.Nil(t, fulltextScanLimit(scans[0]), "the upper SQL LIMIT cannot truncate before residual eligibility")
+				}
+			}
+			p, err := runOneStmt(optimizer, t, "SELECT md5_id, question, answer FROM ft WHERE md5_id IN ('a', 'b') AND (locate('OPEN', allow_access) > 0 OR (locate('ABO', allow_access) > 0 AND locate('SA_O', allow_identities) > 0)) AND locate('日更', content_type) = 0 AND locate('直播', content_type) = 0 ORDER BY FIELD(md5_id, 'a', 'b') LIMIT 30")
+			require.NoError(t, err)
+			for _, node := range p.GetQuery().Nodes {
+				require.False(t, isFulltext2SearchScan(node), "Q3 second stage has no MATCH search")
+			}
+		})
+	}
+}
+
 // findCoveredFulltext2Scan returns the single fulltext2 index search scan appended by the
 // rewrite.
 func findCoveredFulltext2Scan(t *testing.T, builder *QueryBuilder) *plan.Node {

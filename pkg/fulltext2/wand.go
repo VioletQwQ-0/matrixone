@@ -50,30 +50,32 @@ import (
 // over the same shared segment never race. WAND's block-skip means most blocks are
 // never decoded.
 type wandIter struct {
-	tp        *termPostings
-	idx       int
-	curBlk    int      // block index currently decoded into bDocs/bTfs (-1 = none)
-	blen      int      // valid entries in bDocs/bTfs
-	cur       int64    // cached doc() for the current idx (math.MaxInt64 when exhausted)
-	bDocs     []int64  // decoded docIDs of curBlk (cap BlockSize); backed by buf
-	bTfs      []uint8  // decoded tfs of curBlk (cap BlockSize); backed by buf
-	buf       *wandBuf // pooled backing for bDocs/bTfs; returned by releaseWandIters
-	idf2      float64
-	weight    float32
-	maxImpact float32 // term-level upper bound of this term's weighted contribution
+	diagnostics *SearchDiagnostics
+	tp          *termPostings
+	idx         int
+	curBlk      int      // block index currently decoded into bDocs/bTfs (-1 = none)
+	blen        int      // valid entries in bDocs/bTfs
+	cur         int64    // cached doc() for the current idx (math.MaxInt64 when exhausted)
+	bDocs       []int64  // decoded docIDs of curBlk (cap BlockSize); backed by buf
+	bTfs        []uint8  // decoded tfs of curBlk (cap BlockSize); backed by buf
+	buf         *wandBuf // pooled backing for bDocs/bTfs; returned by releaseWandIters
+	idf2        float64
+	weight      float32
+	maxImpact   float32 // term-level upper bound of this term's weighted contribution
 }
 
 // newWandIter creates one block-decoding posting cursor. Scoring metadata is filled by
 // the owning search path: disjunctive WAND needs weight/maxImpact, while conjunctive
 // MUST intersection only needs idf2 and the ordered doc/tf cursor.
-func newWandIter(pl *termPostings) *wandIter {
+func newWandIter(pl *termPostings, diagnostics ...*SearchDiagnostics) *wandIter {
 	b := getWandBuf()
 	it := &wandIter{
-		tp:     pl,
-		curBlk: -1,
-		bDocs:  b.docs,
-		bTfs:   b.tfs,
-		buf:    b,
+		tp:          pl,
+		curBlk:      -1,
+		bDocs:       b.docs,
+		bTfs:        b.tfs,
+		buf:         b,
+		diagnostics: firstDiagnostic(diagnostics),
 	}
 	it.refresh()
 	return it
@@ -86,7 +88,7 @@ func (it *wandIter) atEnd() bool { return it.idx >= it.tp.df() }
 func (it *wandIter) ensure() {
 	b := it.idx / BlockSize
 	if b != it.curBlk {
-		it.blen = it.tp.fillBlock(b, it.bDocs, it.bTfs)
+		it.blen = it.tp.fillBlock(b, it.bDocs, it.bTfs, it.diagnostics)
 		it.curBlk = b
 	}
 }
@@ -124,7 +126,7 @@ func (it *wandIter) skipTo(d int64) {
 		return
 	}
 	if b != it.curBlk {
-		it.blen = it.tp.fillBlock(b, it.bDocs, it.bTfs)
+		it.blen = it.tp.fillBlock(b, it.bDocs, it.bTfs, it.diagnostics)
 		it.curBlk = b
 	}
 	// d <= blockLastDoc[b] = bDocs[blen-1], so the lower bound is within the block
@@ -248,7 +250,7 @@ func (s *Segment) buildWandIters(clauses []clause, algo ScoreAlgo, gs *globalSta
 			continue
 		}
 		idf2 := gs.idfFor(s, c.terms[0], pl)
-		it := newWandIter(pl)
+		it := newWandIter(pl, s.diagnostics)
 		it.idf2 = idf2
 		it.weight = c.weight
 		it.maxImpact = c.weight * s.termMaxImpact(algo, idf2, pl, avgDocLen)
@@ -299,6 +301,9 @@ func (s *Segment) searchWAND(clauses []clause, algo ScoreAlgo, k int, allow Memb
 				break
 			}
 			acc += it.maxImpact
+			if s.diagnostics != nil {
+				s.diagnostics.WANDTermBounds++
+			}
 			if acc >= theta {
 				pivot = i
 				break
@@ -324,6 +329,9 @@ func (s *Segment) searchWAND(clauses []clause, algo ScoreAlgo, k int, allow Memb
 		// same top-k SET, less work. (bm25 uses the identical `blockSum <= theta`.)
 		blockSum := float32(0)
 		for i := 0; i <= pivot; i++ {
+			if s.diagnostics != nil {
+				s.diagnostics.WANDBoundCalls++
+			}
 			blockSum += iters[i].blockMax(pivotDoc, algo, avgDocLen)
 		}
 		if blockSum <= theta {
@@ -342,6 +350,9 @@ func (s *Segment) searchWAND(clauses []clause, algo ScoreAlgo, k int, allow Memb
 			if next <= pivotDoc {
 				next = pivotDoc + 1 // guarantee forward progress
 			}
+			if s.diagnostics != nil {
+				s.diagnostics.WANDCursorMoves++
+			}
 			iters[chooseSkip(iters, pivot, next)].skipTo(next)
 			continue
 		}
@@ -351,6 +362,9 @@ func (s *Segment) searchWAND(clauses []clause, algo ScoreAlgo, k int, allow Memb
 			// only if it passes the WHERE prefilter; the cursor advance always runs so a
 			// filtered-out pivot never stalls the walk.
 			if allowed(allow, pivotDoc) {
+				if s.diagnostics != nil {
+					s.diagnostics.ScoredCandidates++
+				}
 				var score float32
 				for _, it := range iters {
 					if it.doc() == pivotDoc {
@@ -370,12 +384,18 @@ func (s *Segment) searchWAND(clauses []clause, algo ScoreAlgo, k int, allow Memb
 			}
 			for _, it := range iters {
 				if it.doc() == pivotDoc {
+					if s.diagnostics != nil {
+						s.diagnostics.WANDCursorMoves++
+					}
 					it.idx++
 					it.refresh()
 				}
 			}
 		} else {
 			// Not aligned: move a lagging cursor (before the pivot) up to pivotDoc.
+			if s.diagnostics != nil {
+				s.diagnostics.WANDCursorMoves++
+			}
 			iters[chooseSkip(iters, pivot, pivotDoc)].skipTo(pivotDoc)
 		}
 	}

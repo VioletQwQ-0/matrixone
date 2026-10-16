@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"os"
 	"sort"
+	"strconv"
 
 	"github.com/matrixorigin/matrixone/pkg/common/moerr"
 	"github.com/matrixorigin/matrixone/pkg/vectorindex"
@@ -118,7 +119,8 @@ func (p *termPostings) blockLen(b int) int {
 // accumulate from the previous block's last ord (resident blockLastDoc[b-1]), then
 // the raw tf bytes follow. The WAND cursor calls this once per block it lands on;
 // materializeDocIDs/Tfs call it per block to rebuild the flat arrays.
-func (p *termPostings) fillBlock(b int, outDocs []int64, outTfs []uint8) int {
+func (p *termPostings) fillBlock(b int, outDocs []int64, outTfs []uint8, diagnostics ...*SearchDiagnostics) int {
+	diagnostic := firstDiagnostic(diagnostics)
 	blen := p.blockLen(b)
 	if p.docIDs != nil { // build-side: copy from the flat arrays
 		lo := b * BlockSize
@@ -127,6 +129,10 @@ func (p *termPostings) fillBlock(b int, outDocs []int64, outTfs []uint8) int {
 		return blen
 	}
 	data := p.blockData[p.blockOff[b]:p.blockOff[b+1]]
+	if d := diagnostic; d != nil {
+		d.PostingBlocks++
+		d.PostingBytes += uint64(len(data))
+	}
 	var prev int64
 	if b > 0 {
 		prev = p.blockLastDoc[b-1]
@@ -160,7 +166,8 @@ func (p *termPostings) fillBlock(b int, outDocs []int64, outTfs []uint8) int {
 // fillBlockDocs decodes only block b's doc IDs. Phrase intersection never reads term
 // frequency, so using fillBlockDocs there avoids a redundant tf copy for every block the
 // doc cursor visits. WAND keeps using fillBlock because it scores with tf.
-func (p *termPostings) fillBlockDocs(b int, outDocs []int64) int {
+func (p *termPostings) fillBlockDocs(b int, outDocs []int64, diagnostics ...*SearchDiagnostics) int {
+	diagnostic := firstDiagnostic(diagnostics)
 	blen := p.blockLen(b)
 	if p.docIDs != nil {
 		lo := b * BlockSize
@@ -168,6 +175,10 @@ func (p *termPostings) fillBlockDocs(b int, outDocs []int64) int {
 		return blen
 	}
 	data := p.blockData[p.blockOff[b]:p.blockOff[b+1]]
+	if d := diagnostic; d != nil {
+		d.PostingBlocks++
+		d.PostingBytes += uint64(len(data))
+	}
 	var prev int64
 	if b > 0 {
 		prev = p.blockLastDoc[b-1]
@@ -202,7 +213,8 @@ func (p *termPostings) fillBlockDocs(b int, outDocs []int64) int {
 // into build data. matchPhrase reads positions via range / sortedContainsInt32, both of
 // which treat a nil and an empty slice identically, so the degenerate (no-data / corrupt)
 // slots leave out[i] empty rather than nil.
-func (p *termPostings) fillBlockPositions(b int, out [][]int32) int {
+func (p *termPostings) fillBlockPositions(b int, out [][]int32, diagnostics ...*SearchDiagnostics) int {
+	diagnostic := firstDiagnostic(diagnostics)
 	blen := p.blockLen(b)
 	if p.positions != nil { // build-side: copy the flat slice into the buffer's own arrays
 		lo := b * BlockSize
@@ -212,6 +224,10 @@ func (p *termPostings) fillBlockPositions(b int, out [][]int32) int {
 		return blen
 	}
 	data := p.posRaw[p.blockPosOff[b]:p.blockPosOff[b+1]]
+	if d := diagnostic; d != nil {
+		d.PositionBlocks++
+		d.PositionBytes += uint64(len(data))
+	}
 	off := 0
 	for i := 0; i < blen; i++ {
 		out[i] = out[i][:0] // reuse the pooled backing array; empty ≡ nil for the reader
@@ -236,6 +252,9 @@ func (p *termPostings) fillBlockPositions(b int, out [][]int32) int {
 			pp += int32(g)
 			out[i] = append(out[i], pp)
 		}
+		if diagnostic != nil {
+			diagnostic.DecodedPositions += uint64(len(out[i]))
+		}
 	}
 	return blen
 }
@@ -244,30 +263,40 @@ func (p *termPostings) fillBlockPositions(b int, out [][]int32) int {
 // build-side flat slice as-is, or a transient decode of every loaded block. Cold
 // paths (phrase / MERGE / boolean) that scan all postings call this ONCE; WAND
 // ranking never does (it decodes only the blocks its walk lands on).
-func (p *termPostings) materializeDocIDs() []int64 {
+func (p *termPostings) materializeDocIDs(diagnostics ...*SearchDiagnostics) []int64 {
+	diagnostic := firstDiagnostic(diagnostics)
 	if p.docIDs != nil {
 		return p.docIDs
 	}
 	out := make([]int64, p.ndoc)
+	if d := diagnostic; d != nil {
+		d.Materializations++
+		d.MaterializedBytes += uint64(p.ndoc) * 8
+	}
 	var scratch [BlockSize]uint8
 	for b := 0; b < p.nblk(); b++ {
 		lo := b * BlockSize
-		p.fillBlock(b, out[lo:], scratch[:])
+		p.fillBlock(b, out[lo:], scratch[:], diagnostic)
 	}
 	return out
 }
 
 // materializeTfs returns this term's full capped tf bytes (df entries): the
 // build-side flat slice as-is, or a transient decode of every loaded block.
-func (p *termPostings) materializeTfs() []uint8 {
+func (p *termPostings) materializeTfs(diagnostics ...*SearchDiagnostics) []uint8 {
+	diagnostic := firstDiagnostic(diagnostics)
 	if p.tfs != nil {
 		return p.tfs
 	}
 	out := make([]uint8, p.ndoc)
+	if d := diagnostic; d != nil {
+		d.Materializations++
+		d.MaterializedBytes += uint64(p.ndoc)
+	}
 	var scratch [BlockSize]int64
 	for b := 0; b < p.nblk(); b++ {
 		lo := b * BlockSize
-		p.fillBlock(b, scratch[:], out[lo:])
+		p.fillBlock(b, scratch[:], out[lo:], diagnostic)
 	}
 	return out
 }
@@ -278,12 +307,18 @@ func (p *termPostings) materializeTfs() []uint8 {
 // caller that needs them (phrase verification, MERGE) materializes ONCE per query
 // and discards — WAND ranking never calls this. Panics on a build-side... no: a
 // build-side segment returns tp.positions directly.
-func (p *termPostings) materializePositions() [][]int32 {
+func (p *termPostings) materializePositions(diagnostics ...*SearchDiagnostics) [][]int32 {
+	diagnostic := firstDiagnostic(diagnostics)
 	if p.positions != nil {
 		return p.positions
 	}
 	df := p.df()
 	out := make([][]int32, df)
+	if d := diagnostic; d != nil {
+		d.Materializations++
+		d.MaterializedBytes += uint64(df) * uint64(3*strconv.IntSize/8)
+		d.PositionBytes += uint64(len(p.posRaw))
+	}
 	off := 0
 	for i := 0; i < df; i++ {
 		if off >= len(p.posRaw) {
@@ -300,8 +335,13 @@ func (p *termPostings) materializePositions() [][]int32 {
 			pc = uint64(len(p.posRaw) - off)
 		}
 		doc := make([]int32, pc)
+		if d := diagnostic; d != nil {
+			d.Materializations++
+			d.MaterializedBytes += pc * 4
+		}
 		var pp int32
-		for m := uint64(0); m < pc; m++ {
+		var m uint64
+		for ; m < pc; m++ {
 			g, k := binary.Uvarint(p.posRaw[off:])
 			if k <= 0 {
 				break
@@ -309,6 +349,9 @@ func (p *termPostings) materializePositions() [][]int32 {
 			off += k
 			pp += int32(g)
 			doc[m] = pp
+		}
+		if diagnostic != nil {
+			diagnostic.DecodedPositions += m
 		}
 		out[i] = doc
 	}
@@ -321,10 +364,11 @@ func (p *termPostings) materializePositions() [][]int32 {
 // dict is keyed by the actual indexed term STRING and kept sorted so one
 // structure serves both O(log n) lookup and prefix enumeration (`word*`).
 type Segment struct {
-	Id        string
-	N         int64   // number of documents (= len(pks))
-	PkType    int32   // types.T of the source primary key (output decode + membership)
-	AvgDocLen float64 // average doc length; set at LOAD across all loaded segments
+	diagnostics *SearchDiagnostics // non-nil only on a borrowed query-local diagnostic view
+	Id          string
+	N           int64   // number of documents (= len(pks))
+	PkType      int32   // types.T of the source primary key (output decode + membership)
+	AvgDocLen   float64 // average doc length; set at LOAD across all loaded segments
 
 	// Recency orders segments for liveness when the same pk lands in several
 	// (UPDATE / reinsert / a stale base copy) — only the highest-Recency copy is

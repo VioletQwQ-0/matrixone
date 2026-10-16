@@ -119,6 +119,9 @@ func prefixSuccessor(prefix []byte) []byte {
 func (s *Segment) forEachPrefixPosting(prefix string, fn func(string, *termPostings)) error {
 	if s.dict == nil {
 		for _, term := range s.PrefixRange(prefix) {
+			if s.diagnostics != nil {
+				s.diagnostics.ExpandedTerms++
+			}
 			if pl, ok := s.lookup(term); ok {
 				fn(term, pl)
 			}
@@ -132,6 +135,9 @@ func (s *Segment) forEachPrefixPosting(prefix string, fn func(string, *termPosti
 	defer func() { _ = it.Close() }()
 	for {
 		term, off := it.Current()
+		if s.diagnostics != nil {
+			s.diagnostics.ExpandedTerms++
+		}
 		if off < uint64(len(s.ranking)) {
 			if pl, valid := s.decodeTermEntry(int(off)); valid {
 				fn(string(term), pl)
