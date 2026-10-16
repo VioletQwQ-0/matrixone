@@ -26,9 +26,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/matrixorigin/matrixone/pkg/fulltext2"
 	ft2plan "github.com/matrixorigin/matrixone/pkg/fulltext2/plugin/plan"
 	"github.com/matrixorigin/matrixone/pkg/testutil"
+	"github.com/matrixorigin/matrixone/pkg/vm/process"
 	"github.com/stretchr/testify/require"
 )
 
@@ -97,6 +99,9 @@ func TestDiagnosticSelectorPublishesBoundedImmutableFile(t *testing.T) {
 func TestSearchDiagnosticBindingAndTerminalStatus(t *testing.T) {
 	proc := testutil.NewProc(t)
 	proc.SetQueryId("query-one")
+	statementID := uuid.MustParse("f1c24306-16b6-4dc1-b74f-645a3de95f11")
+	proc.SetStmtProfile(process.NewStmtProfile(uuid.Nil, statementID))
+	proc.GetStmtProfile().SetSqlOfStmt("SELECT synthetic")
 	u := &reader{proc: proc, spec: scanSpec(t, ft2plan.ScanOptions{}), plannedLimit: 200, limit: 200}
 	for _, tc := range []struct {
 		name      string
@@ -109,8 +114,13 @@ func TestSearchDiagnosticBindingAndTerminalStatus(t *testing.T) {
 		{"error", errors.New("test failure"), false, 200, "ERROR"},
 		{"cancelled", nil, true, 200, "CANCELLED"},
 		{"limit cleared", nil, false, 0, "INCONCLUSIVE"},
+		{"missing statement", nil, false, 200, "INCONCLUSIVE"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			proc.GetStmtProfile().SetStmtId(statementID)
+			if tc.name == "missing statement" {
+				proc.GetStmtProfile().SetStmtId(uuid.Nil)
+			}
 			hash := sha256.Sum256([]byte("private pattern"))
 			g := parseDiagnosticGate(hex.EncodeToString(hash[:]))
 			q := fulltext2.Fulltext2Query{Pattern: []byte("private pattern"), IncludePredsJSON: []byte(`[{"col":0,"op":"is_null"}]`)}
@@ -118,6 +128,11 @@ func TestSearchDiagnosticBindingAndTerminalStatus(t *testing.T) {
 			r := u.beginSearchDiagnosticWithGate(&q, g)
 			require.NotNil(t, r)
 			require.Equal(t, "query-one", r.QueryID)
+			if tc.name != "missing statement" {
+				require.Equal(t, statementID.String(), r.StatementID)
+			}
+			sqlSum := sha256.Sum256([]byte("SELECT synthetic"))
+			require.Equal(t, hex.EncodeToString(sqlSum[:]), r.SQLSHA256)
 			require.Len(t, r.ScanSHA256, 64)
 			require.Len(t, r.IncludeSHA256, 64)
 			if tc.limit == 0 {

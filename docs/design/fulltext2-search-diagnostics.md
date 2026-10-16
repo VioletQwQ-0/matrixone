@@ -39,11 +39,15 @@ reload the configuration. There is no watcher or background worker.
 
 A process emits at most three receipts per selected hash (twelve total), with
 atomic admission before execution. The receipt carries the process query ID,
+the SQL statement UUID and statement-text hash from StmtProfile,
 a hash of the immutable scan specification, payload/predicate hashes, a sample
 number, planned/reader limits and the limit actually passed to the kernel.
 Only hashes and scalar counts are logged; SQL, tokens, PKs and error text are
 excluded. The ANLI collector must match the payload hash to its parameter ID
-and require exactly one matching FT2 scan in the captured plan. Ambiguous node
+and require exactly one matching FT2 scan in the captured plan. It must match
+the statement UUID returned by `last_query_id()` immediately after execution
+and the sent SQL digest; a truncated or otherwise different statement digest
+cannot be accepted. Ambiguous node
 binding, absent query identity or a missing receipt remains INCONCLUSIVE.
 
 Counters distinguish FST lookup/prefix expansion, directory header/full-entry

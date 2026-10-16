@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/google/uuid"
 	"github.com/matrixorigin/matrixone/pkg/fulltext2"
 	"github.com/matrixorigin/matrixone/pkg/logutil"
 	"go.uber.org/zap"
@@ -143,6 +144,8 @@ func (g *diagnosticGate) claim(payload []byte) (hash string, round uint32) {
 type searchDiagnosticReceipt struct {
 	Version       int                          `json:"version"`
 	QueryID       string                       `json:"query_id"`
+	StatementID   string                       `json:"statement_id"`
+	SQLSHA256     string                       `json:"sql_sha256"`
 	ScanSHA256    string                       `json:"scan_sha256"`
 	PatternSHA256 string                       `json:"pattern_sha256"`
 	IncludeSHA256 string                       `json:"include_sha256"`
@@ -171,11 +174,21 @@ func (u *reader) beginSearchDiagnosticWithGate(q *fulltext2.Fulltext2Query, gate
 	}
 	scan := sha256.Sum256(encoded)
 	include := sha256.Sum256(q.IncludePredsJSON)
+	profile := u.proc.GetStmtProfile()
+	statementID := profile.GetStmtId()
+	statement := profile.GetSqlOfStmt()
 	r := &searchDiagnosticReceipt{
 		Version: 1, QueryID: u.proc.QueryId(), ScanSHA256: hex.EncodeToString(scan[:]),
 		PatternSHA256: hash, Sample: sample, PlannedLimit: u.plannedLimit,
 		IncludeSHA256: hex.EncodeToString(include[:]),
 		RuntimeLimit:  u.limit, Path: "SearchInto", Status: "COMPLETE",
+	}
+	if statementID != uuid.Nil {
+		r.StatementID = statementID.String()
+	}
+	if statement != "" {
+		sum := sha256.Sum256([]byte(statement))
+		r.SQLSHA256 = hex.EncodeToString(sum[:])
 	}
 	if u.limit == 0 {
 		r.Path, r.Status = "stream", "INCONCLUSIVE"
@@ -194,7 +207,7 @@ func (r *searchDiagnosticReceipt) finish(err error, cancelled bool) {
 		r.Status = "ERROR"
 	} else if cancelled {
 		r.Status = "CANCELLED"
-	} else if r.QueryID == "" {
+	} else if r.QueryID == "" || r.StatementID == "" || r.SQLSHA256 == "" {
 		r.Status = "INCONCLUSIVE"
 	}
 	logutil.Info("fulltext2 search diagnostic", zap.Any("receipt", r))
