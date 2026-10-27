@@ -1,9 +1,9 @@
-import glob, hashlib, json, os, pathlib, shutil, signal, socket, subprocess, sys, time, uuid
+import glob, hashlib, json, os, pathlib, re, shutil, signal, socket, subprocess, sys, time, uuid
 import pymysql
 
 R=pathlib.Path('/out'); S=pathlib.Path('/subject'); C=pathlib.Path('/control'); PORT=44130
 oldroot=R/'release'; data=R/'data'; backup=R/'old-cold-backup'; P=[]; events=[]
-states={k:'NOT_RUN' for k in ('release_identity','old_seed','cold_backup','candidate_build','upgrade_dml','restart','snapshot_restore','cold_restore','old_cn_rejoin','cleanup')}
+states={k:'NOT_RUN' for k in ('release_identity','old_seed','old_index_storage','old_index_plan','candidate_index_storage','candidate_index_plan','cold_backup','candidate_build','upgrade_dml','restart','snapshot_restore','cold_restore','old_cn_rejoin','cleanup')}
 def rec(stage,**fields):
     events.append(dict(stage=stage,**fields)); (R/'events.json').write_text(json.dumps(events,indent=2,default=str))
     (R/'summary.json').write_text(json.dumps({'states':states,'events':events},indent=2,default=str))
@@ -40,11 +40,29 @@ def spawn(binary,env,name):
         except (pymysql.MySQLError,OSError):pass
         time.sleep(1)
     raise TimeoutError(name+' SQL readiness timeout')
-def verify(n):
-    query('SELECT id,c,crc32(j) FROM crc32_release.t ORDER BY id',[[i,3719146973,4012824821] for i in range(1,n+1)])
+def check_index(n, prefix):
+    global states
     sql='SELECT id FROM crc32_release.t FORCE INDEX(idx_c) WHERE c=3719146973 ORDER BY id'
     query(sql,[[i] for i in range(1,n+1)])
-    if '__mo_index' not in str(query('EXPLAIN '+sql)):raise AssertionError('index physical path not confirmed')
+    plan=query('EXPLAIN '+sql)
+    states[prefix+'_index_plan']='PASS' if '__mo_index' in str(plan) else 'INCONCLUSIVE'
+    rec('index_plan',scope=prefix,result=states[prefix+'_index_plan'])
+    try:
+        names=query("SELECT DISTINCT index_table_name FROM mo_catalog.mo_indexes WHERE name='idx_c' AND table_id IN (SELECT rel_id FROM mo_catalog.mo_tables WHERE reldatabase='crc32_release' AND relname='t')")
+        if len(names)!=1 or len(names[0])!=1 or not isinstance(names[0][0],str) or not re.fullmatch(r'__mo_index_[A-Za-z0-9_-]+',names[0][0]):raise RuntimeError('index backing table identity unresolved')
+        table=names[0][0]
+        q='SELECT COUNT(*) FROM crc32_release.`'+table+'` i JOIN crc32_release.t t ON i.__mo_index_pri_col=t.id WHERE i.__mo_index_idx_col=serial_full(t.c,t.id)'
+        query(q,[[n]])
+        query('SELECT COUNT(*) FROM crc32_release.`'+table+'`',[[n]])
+        if states[prefix+'_index_storage']!='FAIL':states[prefix+'_index_storage']='PASS'
+        rec('index_storage',scope=prefix,result='PASS',table=table,rows=n)
+    except Exception as e:
+        result='FAIL' if isinstance(e,AssertionError) else 'INCONCLUSIVE'
+        if states[prefix+'_index_storage']!='FAIL':states[prefix+'_index_storage']=result
+        rec('index_storage',scope=prefix,result=result,category=type(e).__name__,reason=str(e))
+def verify(n):
+    query('SELECT id,c,crc32(j) FROM crc32_release.t ORDER BY id',[[i,3719146973,4012824821] for i in range(1,n+1)])
+    check_index(n,'candidate')
     query('SELECT count(*) FROM crc32_release.t WHERE c=4012824821',[[0]])
 def abort_signal(sig,frame): raise SystemExit('signal '+str(sig))
 signal.signal(signal.SIGTERM,abort_signal);signal.signal(signal.SIGINT,abort_signal)
@@ -70,6 +88,7 @@ try:
     (R/'release-version.txt').write_text(v.stdout)
     rec('release_identity',executable_sha256=sha(old),version_exit=v.returncode,expected_commit='71498157cc21f833b8e717f45d50d1f926be3134')
     if v.returncode or '7149815' not in v.stdout:raise RuntimeError('release executable source identity mismatch or unavailable')
+    (R/'release-files-manifest.json').write_text(json.dumps(manifest(oldroot),indent=2))
     states['release_identity']='PASS';rec('stage',name='release_identity',result='PASS')
     states['old_seed']='RUNNING';rec('stage',name='old_seed',result='RUNNING')
     p=spawn(old,env,'old-seed')
@@ -77,9 +96,7 @@ try:
     query('CREATE TABLE crc32_release.t(id INT PRIMARY KEY,j JSON,c BIGINT UNSIGNED GENERATED ALWAYS AS(CRC32(j)) STORED, INDEX idx_c(c))')
     query('INSERT INTO crc32_release.t(id,j) VALUES(1,\'{"t1":"a"}\')')
     query('SELECT id,c,crc32(j) FROM crc32_release.t',[[1,3719146973,3719146973]])
-    oldidx='SELECT id FROM crc32_release.t FORCE INDEX(idx_c) WHERE c=3719146973 ORDER BY id'
-    query(oldidx,[[1]])
-    if '__mo_index' not in str(query('EXPLAIN '+oldidx)):raise AssertionError('old index physical path not confirmed')
+    check_index(1,'old')
     states['old_seed']='PASS';rec('stage',name='old_seed',result='PASS')
     snapshot=False
     try:query('CREATE SNAPSHOT crc32_release_seed FOR TABLE crc32_release t');snapshot=True;rec('snapshot_created',result='PASS')
@@ -99,6 +116,10 @@ try:
     new=S/'mo-service';nenv=os.environ.copy();nenv['LD_LIBRARY_PATH']=str(S/'cgo')+':'+str(S/'thirdparties/install/lib')
     v=subprocess.run([str(new),'-version'],cwd=S,env=nenv,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
     (R/'candidate-version.txt').write_text(v.stdout);rec('candidate_binary',sha256=sha(new),version_exit=v.returncode)
+    deps=subprocess.run(['ldd',str(new)],env=nenv,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
+    (R/'candidate-ldd.txt').write_text(deps.stdout)
+    libs=[p for root in (S/'cgo',S/'thirdparties/install/lib') for p in root.glob('*.so*') if p.is_file() and not p.is_symlink()]
+    (R/'candidate-libraries.json').write_text(json.dumps({str(p.relative_to(S)):sha(p) for p in sorted(libs)},indent=2))
     if v.returncode or '536b2aa' not in v.stdout:raise RuntimeError('candidate executable source identity mismatch')
     states['candidate_build']='PASS';rec('stage',name='candidate_build',result='PASS')
     nenv=os.environ.copy();nenv['LD_LIBRARY_PATH']=str(S/'cgo')+':'+str(S/'thirdparties/install/lib')
@@ -142,9 +163,15 @@ finally:
             try:stop(p)
             except Exception as e:clean=False;rec('cleanup_error',category=type(e).__name__)
         f.close()
-    for port in range(44100,44151):
-        try:
-            with socket.socket() as sk:sk.bind(('0.0.0.0',port))
-        except OSError:clean=False
+    # TIME_WAIT connections do not own a listening socket; inspect actual TCP LISTEN entries.
+    listeners=[]
+    for netfile in ('/proc/net/tcp','/proc/net/tcp6'):
+        for line in pathlib.Path(netfile).read_text().splitlines()[1:]:
+            parts=line.split()
+            if parts[3]=='0A':
+                port=int(parts[1].rsplit(':',1)[1],16)
+                if 44100 <= port <= 44150:listeners.append(port)
+    rec('cleanup_listeners',ports=sorted(set(listeners)))
+    if listeners:clean=False
     states['cleanup']='PASS' if clean and all(p.poll() is not None for p,_ in P) else 'FAIL';rec('cleanup',result=states['cleanup'])
     if states['cleanup']!='PASS':sys.exit(2)
