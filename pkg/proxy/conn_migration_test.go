@@ -127,6 +127,9 @@ func runTestWithQueryServiceHandlersAndRefresh(
 				}
 				resp.MigrateConnFromResponse = &pb.MigrateConnFromResponse{
 					DB:                            "d1",
+					SourceAccountID:               17,
+					SourceUserID:                  41,
+					SourcePrincipalExported:       true,
 					LastAffectedRows:              7,
 					LastInsertID:                  13,
 					LastInsertIDExported:          true,
@@ -208,6 +211,9 @@ func TestQueryServiceMigrateFrom(t *testing.T) {
 		assert.Equal(t, int64(7), resp.LastAffectedRows)
 		assert.Equal(t, uint64(13), resp.LastInsertID)
 		assert.Equal(t, uint64(11), resp.FoundRows)
+		assert.True(t, resp.SourcePrincipalExported)
+		assert.Equal(t, uint32(17), resp.SourceAccountID)
+		assert.Equal(t, uint32(41), resp.SourceUserID)
 	})
 }
 
@@ -254,6 +260,11 @@ func TestQueryServiceMigrateTo(t *testing.T) {
 		if !req.MigrateConnToRequest.LastInsertIDExported {
 			return moerr.NewInternalError(ctx, "missing exported LAST_INSERT_ID state")
 		}
+		if !req.MigrateConnToRequest.SourcePrincipalExported ||
+			req.MigrateConnToRequest.SourceAccountID != 17 ||
+			req.MigrateConnToRequest.SourceUserID != 41 {
+			return moerr.NewInternalError(ctx, "source principal was not preserved")
+		}
 		resp.MigrateConnToResponse = &pb.MigrateConnToResponse{Success: true}
 		return nil
 	}
@@ -268,6 +279,36 @@ func TestQueryServiceMigrateTo(t *testing.T) {
 		cc.migration.setVarStmts = append(cc.migration.setVarStmts, "set a=1")
 		err = cc.migrateConnTo(sc, resp)
 		assert.NoError(t, err)
+	})
+}
+
+func TestQueryServiceMigrateToRejectsOldTargetPrincipalProtocol(t *testing.T) {
+	cn := metadata.CNService{ServiceID: "s1", SQLAddress: "pipe"}
+	runTestWithQueryService(t, cn, func(cc *clientConn, _ string) {
+		targetRuntime := runtime.ServiceRuntime(cn.ServiceID)
+		oldVersion, hadVersion := targetRuntime.GetGlobalVariables(runtime.MOProtocolVersion)
+		targetRuntime.SetGlobalVariables(runtime.MOProtocolVersion, defines.MORPCVersion134)
+		defer func() {
+			if hadVersion {
+				targetRuntime.SetGlobalVariables(runtime.MOProtocolVersion, oldVersion)
+			} else {
+				targetRuntime.SetGlobalVariables(runtime.MOProtocolVersion, defines.MORPCLatestVersion)
+			}
+		}()
+
+		local, remote := net.Pipe()
+		defer remote.Close()
+		sc := &recordingMigrationServerConn{mockServerConn: newMockServerConn(local)}
+		defer sc.Close()
+
+		err := cc.migrateConnTo(sc, &pb.MigrateConnFromResponse{
+			SourceAccountID:         17,
+			SourceUserID:            41,
+			SourcePrincipalExported: true,
+			LastInsertIDExported:    true,
+		})
+		assert.ErrorContains(t, err, "connection migration requires protocol version 135")
+		assert.Empty(t, sc.statements, "no target session mutation before protocol admission")
 	})
 }
 
@@ -906,11 +947,14 @@ type migrationUserLockQueryClient struct {
 	userLevelLockReleaseSupported bool
 	prepareStmts                  []*pb.PrepareStmt
 	migrateToPrepareStmts         []*pb.PrepareStmt
+	migrateToRequest              *pb.MigrateConnToRequest
+	getProtocolVersionCalls       int
 	migrateFromErr                error
 	preparedStmtLongDataChecked   bool
 	omitPreparedStmtCursorsCheck  bool
 	omitTempTableState            bool
 	omitLastInsertIDState         bool
+	omitSourcePrincipal           bool
 	releaseCount                  int
 }
 
@@ -920,12 +964,21 @@ func (c *migrationUserLockQueryClient) ServiceID() string {
 
 func (c *migrationUserLockQueryClient) SendMessage(ctx context.Context, address string, req *pb.Request) (*pb.Response, error) {
 	switch req.CmdMethod {
+	case pb.CmdMethod_GetProtocolVersion:
+		if req.GetProtocolVersion == nil {
+			return nil, moerr.NewInternalError(ctx, "missing protocol-version request")
+		}
+		c.getProtocolVersionCalls++
+		return &pb.Response{GetProtocolVersion: &pb.GetProtocolVersionResponse{Version: defines.MORPCLatestVersion}}, nil
 	case pb.CmdMethod_MigrateConnFrom:
 		if c.migrateFromErr != nil {
 			return nil, c.migrateFromErr
 		}
 		return &pb.Response{MigrateConnFromResponse: &pb.MigrateConnFromResponse{
 			DB:                            "d1",
+			SourceAccountID:               17,
+			SourceUserID:                  41,
+			SourcePrincipalExported:       !c.omitSourcePrincipal,
 			PrepareStmts:                  append([]*pb.PrepareStmt(nil), c.prepareStmts...),
 			UserLevelLocks:                c.userLevelLocks,
 			UserLevelLockReleaseSupported: c.userLevelLockReleaseSupported,
@@ -935,6 +988,11 @@ func (c *migrationUserLockQueryClient) SendMessage(ctx context.Context, address 
 			LastInsertIDExported:          !c.omitLastInsertIDState,
 		}}, nil
 	case pb.CmdMethod_MigrateConnTo:
+		if req.MigrateConnToRequest == nil {
+			return nil, moerr.NewInternalError(ctx, "missing migration request")
+		}
+		request := *req.MigrateConnToRequest
+		c.migrateToRequest = &request
 		c.migrateToPrepareStmts = append(
 			[]*pb.PrepareStmt(nil), req.MigrateConnToRequest.PrepareStmts...)
 		return &pb.Response{MigrateConnToResponse: &pb.MigrateConnToResponse{Success: true}}, nil
@@ -986,6 +1044,28 @@ func TestMigrateConnFromRejectsMissingLastInsertIDSnapshot(t *testing.T) {
 	defer closeFn()
 	ccc := cc.(*clientConn)
 	queryClient := &migrationUserLockQueryClient{omitLastInsertIDState: true}
+	ccc.queryClient = queryClient
+	ccc.moCluster = cluster
+
+	_, err := ccc.migrateConnFromContext(context.Background(), "pipe")
+	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedNotSafeToStartTransfer))
+	require.Equal(t, 1, queryClient.releaseCount)
+}
+
+func TestMigrateConnFromRejectsMissingSourcePrincipal(t *testing.T) {
+	cn := metadata.CNService{ServiceID: "s1", SQLAddress: "pipe", QueryAddress: "query"}
+	cluster := clusterservice.NewMOCluster(
+		"",
+		nil,
+		0,
+		clusterservice.WithDisableRefresh(),
+		clusterservice.WithServices([]metadata.CNService{cn}, nil))
+	defer cluster.Close()
+
+	cc, closeFn := createNewClientConn(t)
+	defer closeFn()
+	ccc := cc.(*clientConn)
+	queryClient := &migrationUserLockQueryClient{omitSourcePrincipal: true}
 	ccc.queryClient = queryClient
 	ccc.moCluster = cluster
 
@@ -1138,6 +1218,12 @@ func TestMigrateConnFromFiltersCloseThatBackendHasNotDispatched(t *testing.T) {
 	defer remote.Close()
 	assert.NoError(t, ccc.migrateConnContext(
 		context.Background(), "pipe", newMockServerConn(local)))
+	assert.Equal(t, 1, queryClient.getProtocolVersionCalls)
+	if assert.NotNil(t, queryClient.migrateToRequest) {
+		assert.True(t, queryClient.migrateToRequest.SourcePrincipalExported)
+		assert.Equal(t, uint32(17), queryClient.migrateToRequest.SourceAccountID)
+		assert.Equal(t, uint32(41), queryClient.migrateToRequest.SourceUserID)
+	}
 	if assert.Len(t, queryClient.migrateToPrepareStmts, 1) {
 		assert.Equal(t, frontend.GetPrepareStmtName(liveID),
 			queryClient.migrateToPrepareStmts[0].Name)

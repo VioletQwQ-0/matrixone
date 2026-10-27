@@ -686,6 +686,11 @@ message MigrateConnFromResponse {
   // True when LastInsertID was captured by a source that understands this
   // migration contract. False means the value is unavailable, not zero.
   bool LastInsertIDExported = 19;
+  // Authenticated source identity for the session being migrated. A target
+  // must compare this with the principal authenticated on its new connection.
+  uint32 SourceAccountID = 21;
+  uint32 SourceUserID = 22;
+  bool SourcePrincipalExported = 23;
 }
 
 message MigrateConnToRequest {
@@ -710,6 +715,11 @@ message MigrateConnToRequest {
   uint64 LastInsertID = 15;
   // True only when LastInsertID came from an authoritative source snapshot.
   bool LastInsertIDExported = 16;
+  // Authenticated source identity for the session being migrated. A target
+  // must compare this with the principal authenticated on its new connection.
+  uint32 SourceAccountID = 17;
+  uint32 SourceUserID = 18;
+  bool SourcePrincipalExported = 19;
 }
 
 message MigrateUserDefinedVar {

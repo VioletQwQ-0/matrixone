@@ -1158,6 +1158,8 @@ func TestRoutineMigrateConnectionFromRejectsUserLevelLocks(t *testing.T) {
 		},
 	}
 	proto.SetStr(DBNAME, "db1")
+	// The lock guard applies to an authenticated source session.
+	ses.SetTenantInfo(&TenantInfo{Tenant: "acc", TenantID: 1, User: "owner", UserID: 2, DefaultRole: "public"})
 	rt.setSession(ses)
 
 	resp := &query.MigrateConnFromResponse{}

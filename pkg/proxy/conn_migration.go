@@ -63,6 +63,11 @@ func (c *clientConn) migrateConnFromContext(
 	if r == nil {
 		return nil, moerr.NewInternalError(parent, "bad response")
 	}
+	if !r.SourcePrincipalExported {
+		// A legacy source cannot prove which authenticated user owns the
+		// session. Do not let a target infer identity from replayed credentials.
+		return nil, moerr.GetOkExpectedNotSafeToStartTransfer()
+	}
 	if !r.PreparedStmtCursorsChecked {
 		// An older CN cannot attest that its prepared statements are free of
 		// active cursors. Their retained results are absent from the snapshot.
@@ -123,6 +128,11 @@ func (c *clientConn) migrateConnToContext(
 		return moerr.GetOkExpectedNotSafeToStartTransfer()
 	}
 	var requiredProtocol int64
+	if info.SourcePrincipalExported {
+		// Older targets ignore the source-principal fields and would otherwise
+		// keep the user selected by the replayed MySQL handshake.
+		requiredProtocol = defines.MORPCVersion135
+	}
 	for _, prepared := range info.PrepareStmts {
 		if prepared == nil || prepared.RequiredProtocolVersion < 0 {
 			return moerr.NewInvalidInput(ctx, "invalid prepared statement migration contract")
@@ -141,6 +151,9 @@ func (c *clientConn) migrateConnToContext(
 		}
 		typedMigrationSupported = targetProtocol >= defines.MORPCVersion22
 		if targetProtocol < requiredProtocol {
+			if info.SourcePrincipalExported && targetProtocol < defines.MORPCVersion135 {
+				return moerr.NewNotSupportedf(ctx, "connection migration requires protocol version %d", defines.MORPCVersion135)
+			}
 			return moerr.NewNotSupportedf(ctx, "prepared statement migration requires protocol version %d", requiredProtocol)
 		}
 		if info.FoundRows != 0 && targetProtocol < defines.MORPCVersion29 {
@@ -228,6 +241,9 @@ func (c *clientConn) migrateConnToContext(
 	req := c.queryClient.NewRequest(query.CmdMethod_MigrateConnTo)
 	req.MigrateConnToRequest = &query.MigrateConnToRequest{
 		ConnID:                    c.connID,
+		SourceAccountID:           info.SourceAccountID,
+		SourceUserID:              info.SourceUserID,
+		SourcePrincipalExported:   info.SourcePrincipalExported,
 		DB:                        info.DB,
 		PrepareStmts:              info.PrepareStmts,
 		LastAffectedRows:          info.LastAffectedRows,
