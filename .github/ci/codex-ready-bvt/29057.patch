@@ -1,0 +1,342 @@
+diff --git a/pkg/sql/plan/base_binder.go b/pkg/sql/plan/base_binder.go
+index f254196045..cef9b05edd 100644
+--- a/pkg/sql/plan/base_binder.go
++++ b/pkg/sql/plan/base_binder.go
+@@ -8873,10 +8873,25 @@ func bindFuncExprImplByPlanExpr(
+ 		refineRepeatLiteralReturnType(args, &returnType)
+ 
+ 	case "substring", "substr", "mid":
+-		refineSubstringLiteralReturnType(args, &returnType)
++		if argsType[0].Oid != types.T_blob {
++			refineSubstringLiteralReturnType(args, &returnType)
++		}
+ 
+ 	case "left", "right":
+-		refineLeftRightLiteralReturnType(args, &returnType)
++		if argsType[0].Oid != types.T_blob {
++			refineLeftRightLiteralReturnType(args, &returnType)
++		}
++
++	case "hex":
++		// Keep the slice's BLOB type for its other consumers. HEX needs only
++		// its proven payload bound to choose the result's metadata.
++		if len(args) == 1 && argsType[0].Oid == types.T_blob {
++			if bounded, ok := boundedBinaryBlobSliceType(args[0]); ok {
++				if resolved, ok := function.GetFunctionByNameWithoutError(name, []types.Type{bounded}); ok {
++					returnType = resolved.GetReturnType()
++				}
++			}
++		}
+ 
+ 	case "lpad", "rpad":
+ 		refinePadLiteralReturnType(args, &returnType)
+@@ -9473,11 +9488,6 @@ func refineSubstringLiteralReturnType(args []*plan.Expr, returnType *types.Type)
+ 		return
+ 	}
+ 
+-	sourceType := makeTypeByPlan2Expr(args[0])
+-	if sourceType.Oid == types.T_blob {
+-		return
+-	}
+-
+ 	if possibleStringDomainsForExpr(args[0]) != possibleStringDomainBinary {
+ 		if len(args) == 3 {
+ 			refineCharacterSliceLiteralWidth(args[0], args[2], returnType)
+@@ -9524,6 +9534,26 @@ func refineSubstringLiteralReturnType(args []*plan.Expr, returnType *types.Type)
+ 	refineKnownStringResultType(returnType, bound, binary)
+ }
+ 
++// boundedBinaryBlobSliceType obtains a byte bound without changing the slice
++// expression's declared BLOB type, or its overload and execution arguments.
++func boundedBinaryBlobSliceType(expr *plan.Expr) (types.Type, bool) {
++	fn := expr.GetF()
++	if fn == nil || fn.Func == nil || len(fn.Args) == 0 ||
++		possibleStringDomainsForExpr(fn.Args[0]) != possibleStringDomainBinary {
++		return types.Type{}, false
++	}
++	bounded := types.T_blob.ToType()
++	switch strings.ToLower(fn.Func.GetObjName()) {
++	case "substring", "substr", "mid":
++		refineSubstringLiteralReturnType(fn.Args, &bounded)
++	case "left", "right":
++		refineLeftRightLiteralReturnType(fn.Args, &bounded)
++	default:
++		return types.Type{}, false
++	}
++	return bounded, bounded.Oid == types.T_varbinary
++}
++
+ // refineLeftRightLiteralReturnType narrows LEFT/RIGHT when the requested
+ // length is a constant.  The result cannot exceed either that length or the
+ // source's proven bound; an unknown length keeps the overload's conservative
+@@ -9532,10 +9562,6 @@ func refineLeftRightLiteralReturnType(args []*plan.Expr, returnType *types.Type)
+ 	if len(args) != 2 {
+ 		return
+ 	}
+-	sourceType := makeTypeByPlan2Expr(args[0])
+-	if sourceType.Oid == types.T_blob {
+-		return
+-	}
+ 	if possibleStringDomainsForExpr(args[0]) != possibleStringDomainBinary {
+ 		refineCharacterSliceLiteralWidth(args[0], args[1], returnType)
+ 		return
+diff --git a/pkg/sql/plan/base_binder_blob_slice_width_test.go b/pkg/sql/plan/base_binder_blob_slice_width_test.go
+new file mode 100644
+index 0000000000..dceaa99d01
+--- /dev/null
++++ b/pkg/sql/plan/base_binder_blob_slice_width_test.go
+@@ -0,0 +1,168 @@
++// Copyright 2026 Matrix Origin
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package plan
++
++import (
++	"context"
++	"testing"
++
++	"github.com/matrixorigin/matrixone/pkg/container/types"
++	planpb "github.com/matrixorigin/matrixone/pkg/pb/plan"
++	"github.com/stretchr/testify/require"
++)
++
++func TestBoundedBinarySliceRefinesBlobResultWidth(t *testing.T) {
++	blobType := types.NewWithCharset(types.T_blob, 0, 0, types.CharsetBinary)
++	source := &planpb.Expr{
++		Typ: blobType.PlanType(),
++		Expr: &planpb.Expr_Lit{Lit: &planpb.Literal{
++			IsBin:       true,
++			LiteralForm: planpb.StringLiteralForm_STRING_LITERAL_HEX,
++			Value:       &planpb.Literal_Sval{Sval: "61"},
++		}},
++	}
++	count := makePlan2Int64ConstExprWithType(1)
++	start := makePlan2Int64ConstExprWithType(1)
++
++	t.Run("left-right", func(t *testing.T) {
++		got := blobType
++		refineLeftRightLiteralReturnType([]*planpb.Expr{source, count}, &got)
++		require.Equal(t, types.T_varbinary, got.Oid)
++		require.Equal(t, int32(1), got.Width)
++		require.Equal(t, types.CharsetBinary, got.Charset)
++	})
++
++	t.Run("substring", func(t *testing.T) {
++		got := blobType
++		refineSubstringLiteralReturnType([]*planpb.Expr{source, start, count}, &got)
++		require.Equal(t, types.T_varbinary, got.Oid)
++		require.Equal(t, int32(1), got.Width)
++		require.Equal(t, types.CharsetBinary, got.Charset)
++	})
++
++	t.Run("unknown-blob-domain-stays-unbounded", func(t *testing.T) {
++		unknown := &planpb.Expr{
++			Typ:  blobType.PlanType(),
++			Expr: &planpb.Expr_V{V: &planpb.VarRef{Name: "v"}},
++		}
++		left := blobType
++		refineLeftRightLiteralReturnType([]*planpb.Expr{unknown, count}, &left)
++		require.Equal(t, blobType, left)
++
++		substring := blobType
++		refineSubstringLiteralReturnType([]*planpb.Expr{unknown, start, count}, &substring)
++		require.Equal(t, blobType, substring)
++	})
++}
++
++func TestHexBoundedBlobSlicePreservesSliceType(t *testing.T) {
++	ctx := context.Background()
++	blobType := types.T_blob.ToType()
++	source := &planpb.Expr{Typ: blobType.PlanType(), Expr: &planpb.Expr_Col{Col: &planpb.ColRef{}}}
++	for _, name := range []string{"left", "right", "substring", "substr", "mid"} {
++		for _, tc := range []struct {
++			name      string
++			length    *planpb.Expr
++			wantOID   types.T
++			wantWidth int32
++		}{
++			{"bounded", makePlan2Int64ConstExprWithType(1), types.T_varchar, 2},
++			{"aggregate limit", makePlan2Int64ConstExprWithType(511), types.T_varchar, 1022},
++			{"above aggregate limit", makePlan2Int64ConstExprWithType(512), types.T_varchar, 1024},
++			{"hex result exceeds varchar", makePlan2Int64ConstExprWithType(32768), types.T_text, 0},
++			{"unknown", &planpb.Expr{Typ: planpb.Type{Id: int32(types.T_int64)}, Expr: &planpb.Expr_P{P: &planpb.ParamRef{Pos: 0}}}, types.T_text, 0},
++		} {
++			t.Run(name+"/"+tc.name, func(t *testing.T) {
++				args := []*planpb.Expr{source, tc.length}
++				if name == "substring" || name == "substr" || name == "mid" {
++					args = []*planpb.Expr{source, makePlan2Int64ConstExprWithType(1), tc.length}
++				}
++				slice, err := BindFuncExprImplByPlanExpr(ctx, name, args)
++				require.NoError(t, err)
++				require.Equal(t, int32(types.T_blob), slice.Typ.Id)
++				for _, aggregate := range []string{"bit_and", "bit_or", "bit_xor"} {
++					bound, err := BindFuncExprImplByPlanExpr(ctx, aggregate, []*planpb.Expr{slice})
++					require.NoError(t, err)
++					require.Equal(t, slice.Typ.Id, bound.Typ.Id)
++				}
++				result, err := BindFuncExprImplByPlanExpr(ctx, "hex", []*planpb.Expr{slice})
++				require.NoError(t, err)
++				require.Equal(t, int32(tc.wantOID), result.Typ.Id)
++				require.Equal(t, tc.wantWidth, result.Typ.Width)
++			})
++		}
++	}
++
++	variable := &planpb.Expr{Typ: blobType.PlanType(), Expr: &planpb.Expr_V{V: &planpb.VarRef{Name: "v"}}}
++	slice, err := BindFuncExprImplByPlanExpr(ctx, "left", []*planpb.Expr{variable, makePlan2Int64ConstExprWithType(1)})
++	require.NoError(t, err)
++	result, err := BindFuncExprImplByPlanExpr(ctx, "hex", []*planpb.Expr{slice})
++	require.NoError(t, err)
++	require.Equal(t, int32(types.T_text), result.Typ.Id)
++}
++
++func TestHexSliceOfConditionalBlobMetadata(t *testing.T) {
++	ctx := context.Background()
++	column := func(typ types.Type, pos int32) *planpb.Expr {
++		return &planpb.Expr{Typ: typ.PlanType(), Expr: &planpb.Expr_Col{Col: &planpb.ColRef{ColPos: pos}}}
++	}
++	condition := column(types.T_bool.ToType(), 0)
++	text := column(types.NewWithCharset(types.T_varchar, 16, 0, types.CharsetUTF8), 1)
++	binary := column(types.NewWithCharset(types.T_varbinary, 16, 0, types.CharsetBinary), 2)
++	coalesced, err := BindFuncExprImplByPlanExpr(ctx, "coalesce", []*planpb.Expr{text, binary})
++	require.NoError(t, err)
++	for _, selector := range []string{"if", "case"} {
++		t.Run(selector, func(t *testing.T) {
++			selected, err := BindFuncExprImplByPlanExpr(ctx, selector, []*planpb.Expr{condition, binary, coalesced})
++			require.NoError(t, err)
++			require.Equal(t, int32(types.T_blob), selected.Typ.Id)
++			require.Equal(t, possibleStringDomainText|possibleStringDomainBinary, possibleStringDomainsForExpr(selected))
++			for _, name := range []string{"left", "right", "substring"} {
++				args := []*planpb.Expr{selected, makePlan2Int64ConstExprWithType(1)}
++				if name == "substring" {
++					args = append(args, makePlan2Int64ConstExprWithType(1))
++				}
++				slice, err := BindFuncExprImplByPlanExpr(ctx, name, args)
++				require.NoError(t, err)
++				require.Equal(t, int32(types.T_blob), slice.Typ.Id)
++				result, err := BindFuncExprImplByPlanExpr(ctx, "hex", []*planpb.Expr{slice})
++				require.NoError(t, err)
++				// The low-level binder has not consumed a SQL declaration boundary:
++				// the selected value can still be a multibyte text row.
++				require.Equal(t, int32(types.T_text), result.Typ.Id)
++				require.Equal(t, int32(0), result.Typ.Width)
++			}
++
++			// SQL binding can consume a binary declaration with an explicit
++			// representation cast before binding the slice.
++			declared, err := appendExplicitCastBeforeExpr(ctx, selected, selected.Typ)
++			require.NoError(t, err)
++			require.Equal(t, possibleStringDomainBinary, possibleStringDomainsForExpr(declared))
++			for _, name := range []string{"left", "right", "substring"} {
++				args := []*planpb.Expr{declared, makePlan2Int64ConstExprWithType(1)}
++				if name == "substring" {
++					args = append(args, makePlan2Int64ConstExprWithType(1))
++				}
++				slice, err := BindFuncExprImplByPlanExpr(ctx, name, args)
++				require.NoError(t, err)
++				require.Equal(t, int32(types.T_blob), slice.Typ.Id)
++				result, err := BindFuncExprImplByPlanExpr(ctx, "hex", []*planpb.Expr{slice})
++				require.NoError(t, err)
++				require.Equal(t, int32(types.T_varchar), result.Typ.Id)
++				require.Equal(t, int32(2), result.Typ.Width)
++			}
++		})
++	}
++}
+diff --git a/test/distributed/cases/dtype/binary_string_function_semantics.result b/test/distributed/cases/dtype/binary_string_function_semantics.result
+index e728b1144f..82852163e3 100644
+--- a/test/distributed/cases/dtype/binary_string_function_semantics.result
++++ b/test/distributed/cases/dtype/binary_string_function_semantics.result
+@@ -115,7 +115,7 @@ from (select id, coalesce(txt, bin) x from domains) d order by id;
+ 3  ¦  2  ¦  E4BDA0  ¦  61E4BDA0
+ select id, char_length(x), hex(left(x, 1)), hex(reverse(x))
+ from (select id, coalesce(txt, bin) x from domains limit 3) d order by id;
+-➤ id[4,32,0]  ¦  char_length(x)[-5,64,0]  ¦  hex(left(x, 1))[-1,16383,0]  ¦  hex(reverse(x))[-1,16383,0]  𝄀
++➤ id[4,32,0]  ¦  char_length(x)[-5,64,0]  ¦  hex(left(x, 1))[12,2,0]  ¦  hex(reverse(x))[-1,16383,0]  𝄀
+ 1  ¦  4  ¦  E4  ¦  61A0BDE4  𝄀
+ 2  ¦  4  ¦  E4  ¦  61A0BDE4  𝄀
+ 3  ¦  4  ¦  E4  ¦  61A0BDE4
+@@ -304,7 +304,7 @@ char_length((select coalesce(txt, bin) x from domains where id = 1 union all sel
+ hex(left((select coalesce(txt, bin) x from domains where id = 1 union all select _binary '' order by x desc limit 1), 1)),
+ char_length((select first_value(coalesce(txt, bin)) over () from domains limit 1)),
+ hex(left((select first_value(coalesce(txt, bin)) over () from domains limit 1), 1));
+-➤ char_length((select distinct coalesce(txt, bin) from domains limit 1))[-5,64,0]  ¦  hex(left((select distinct coalesce(txt, bin) from domains limit 1), 1))[-1,16383,0]  ¦  char_length((select coalesce(txt, bin) as x from domains where id = 1 union all select  order by x desc limit 1))[-5,64,0]  ¦  hex(left((select coalesce(txt, bin) as x from domains where id = 1 union all select  order by x desc limit 1), 1))[-1,16383,0]  ¦  char_length((select first_value(coalesce(txt, bin)) over () from domains limit 1))[-5,64,0]  ¦  hex(left((select first_value(coalesce(txt, bin)) over () from domains limit 1), 1))[-1,16383,0]  𝄀
++➤ char_length((select distinct coalesce(txt, bin) from domains limit 1))[-5,64,0]  ¦  hex(left((select distinct coalesce(txt, bin) from domains limit 1), 1))[12,2,0]  ¦  char_length((select coalesce(txt, bin) as x from domains where id = 1 union all select  order by x desc limit 1))[-5,64,0]  ¦  hex(left((select coalesce(txt, bin) as x from domains where id = 1 union all select  order by x desc limit 1), 1))[12,2,0]  ¦  char_length((select first_value(coalesce(txt, bin)) over () from domains limit 1))[-5,64,0]  ¦  hex(left((select first_value(coalesce(txt, bin)) over () from domains limit 1), 1))[12,2,0]  𝄀
+ 4  ¦  E4  ¦  4  ¦  E4  ¦  4  ¦  E4
+ select id, char_length(coalesce(reverse(coalesce(txt, bin)), '')),
+ hex(reverse(coalesce(reverse(coalesce(txt, bin)), ''))),
+@@ -328,6 +328,14 @@ from domains order by id;
+ 1  ¦  4  ¦  E4  ¦  61A0BDE4  ¦  4  ¦  E4  ¦  61A0BDE4  𝄀
+ 2  ¦  4  ¦  E4  ¦  61A0BDE4  ¦  4  ¦  E4  ¦  61A0BDE4  𝄀
+ 3  ¦  4  ¦  E4  ¦  61A0BDE4  ¦  4  ¦  E4  ¦  61A0BDE4
++select id,
++hex(right(if(id = 2, bin, coalesce(txt, bin)), 1)),
++hex(substring(case when id = 2 then bin else coalesce(txt, bin) end, 1, 1))
++from domains order by id;
++➤ id[4,32,0]  ¦  hex(right(if(id = 2, bin, coalesce(txt, bin)), 1))[12,2,0]  ¦  hex(substring(case when id = 2 then bin else coalesce(txt, bin) end, 1, 1))[12,2,0]  𝄀
++1  ¦  61  ¦  E4  𝄀
++2  ¦  61  ¦  E4  𝄀
++3  ¦  61  ¦  E4
+ select id, locate('a', coalesce(txt, bin)), instr(coalesce(txt, bin), 'a'),
+ coalesce(txt, bin) like '__', coalesce(txt, bin) like '____',
+ char_length(coalesce(txt, bin)), hex(left(coalesce(txt, bin), 1))
+@@ -345,20 +353,20 @@ from (select id, coalesce(txt, bin) x from domains) d order by id;
+ 3  ¦  4  ¦  4  ¦  0  ¦  1  ¦  2  ¦  E4BDA0
+ select id, char_length(x), hex(left(x, 1)), hex(reverse(x))
+ from (select id, coalesce(txt, bin) x from domains having id > 0) d order by id;
+-➤ id[4,32,0]  ¦  char_length(x)[-5,64,0]  ¦  hex(left(x, 1))[-1,16383,0]  ¦  hex(reverse(x))[-1,16383,0]  𝄀
++➤ id[4,32,0]  ¦  char_length(x)[-5,64,0]  ¦  hex(left(x, 1))[12,2,0]  ¦  hex(reverse(x))[-1,16383,0]  𝄀
+ 1  ¦  4  ¦  E4  ¦  61A0BDE4  𝄀
+ 2  ¦  4  ¦  E4  ¦  61A0BDE4  𝄀
+ 3  ¦  4  ¦  E4  ¦  61A0BDE4
+ select id, char_length(x), hex(left(x, 1)), hex(reverse(x))
+ from (select id, coalesce(txt, bin) x from domains having true) d order by id;
+-➤ id[4,32,0]  ¦  char_length(x)[-5,64,0]  ¦  hex(left(x, 1))[-1,16383,0]  ¦  hex(reverse(x))[-1,16383,0]  𝄀
++➤ id[4,32,0]  ¦  char_length(x)[-5,64,0]  ¦  hex(left(x, 1))[12,2,0]  ¦  hex(reverse(x))[-1,16383,0]  𝄀
+ 1  ¦  4  ¦  E4  ¦  61A0BDE4  𝄀
+ 2  ¦  4  ¦  E4  ¦  61A0BDE4  𝄀
+ 3  ¦  4  ¦  E4  ¦  61A0BDE4
+ select char_length((select coalesce(txt, bin) from domains group by coalesce(txt, bin))),
+ hex(left((select coalesce(txt, bin) from domains group by coalesce(txt, bin)), 1)),
+ hex(reverse((select coalesce(txt, bin) from domains group by coalesce(txt, bin))));
+-➤ char_length((select coalesce(txt, bin) from domains group by coalesce(txt, bin)))[-5,64,0]  ¦  hex(left((select coalesce(txt, bin) from domains group by coalesce(txt, bin)), 1))[-1,16383,0]  ¦  hex(reverse((select coalesce(txt, bin) from domains group by coalesce(txt, bin))))[-1,16383,0]  𝄀
++➤ char_length((select coalesce(txt, bin) from domains group by coalesce(txt, bin)))[-5,64,0]  ¦  hex(left((select coalesce(txt, bin) from domains group by coalesce(txt, bin)), 1))[12,2,0]  ¦  hex(reverse((select coalesce(txt, bin) from domains group by coalesce(txt, bin))))[-1,16383,0]  𝄀
+ 4  ¦  E4  ¦  61A0BDE4
+ select char_length((select coalesce(txt, bin) x from domains where id = 1 having x is not null)),
+ hex(left((select coalesce(txt, bin) x from domains where id = 1 having x is not null), 1));
+@@ -368,7 +376,7 @@ create table singleton_domains (id int primary key, txt varchar(16), bin varbina
+ insert into singleton_domains values (1, '你a', null);
+ select char_length((select coalesce(txt, bin) from singleton_domains group by coalesce(txt, bin))),
+ hex(left((select coalesce(txt, bin) from singleton_domains group by coalesce(txt, bin)), 1));
+-➤ char_length((select coalesce(txt, bin) from singleton_domains group by coalesce(txt, bin)))[-5,64,0]  ¦  hex(left((select coalesce(txt, bin) from singleton_domains group by coalesce(txt, bin)), 1))[-1,16383,0]  𝄀
++➤ char_length((select coalesce(txt, bin) from singleton_domains group by coalesce(txt, bin)))[-5,64,0]  ¦  hex(left((select coalesce(txt, bin) from singleton_domains group by coalesce(txt, bin)), 1))[12,2,0]  𝄀
+ 4  ¦  E4
+ select char_length((select coalesce(txt, bin) from singleton_domains where id = 1 group by coalesce(txt, bin))),
+ hex(left((select coalesce(txt, bin) from singleton_domains where id = 1 group by coalesce(txt, bin)), 1));
+diff --git a/test/distributed/cases/dtype/binary_string_function_semantics.test b/test/distributed/cases/dtype/binary_string_function_semantics.test
+index 0e4413667d..f1c915a702 100644
+--- a/test/distributed/cases/dtype/binary_string_function_semantics.test
++++ b/test/distributed/cases/dtype/binary_string_function_semantics.test
+@@ -205,6 +205,11 @@ select id, char_length(if(id = 2, bin, coalesce(txt, bin))),
+        hex(left(case when id = 2 then bin else coalesce(txt, bin) end, 1)),
+        hex(reverse(case when id = 2 then bin else coalesce(txt, bin) end))
+ from domains order by id;
++-- Fixed-length slices stay bounded after IF/CASE promotes their value to BLOB.
++select id,
++       hex(right(if(id = 2, bin, coalesce(txt, bin)), 1)),
++       hex(substring(case when id = 2 then bin else coalesce(txt, bin) end, 1, 1))
++from domains order by id;
+ -- Comparison/search consumes declarations; slicing still uses the selected row.
+ select id, locate('a', coalesce(txt, bin)), instr(coalesce(txt, bin), 'a'),
+        coalesce(txt, bin) like '__', coalesce(txt, bin) like '____',

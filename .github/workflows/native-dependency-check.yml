@@ -1,146 +1,98 @@
 name: Native Dependency Checks
-
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/native-dependency-check.yml"
-      - ".github/workflows/sca-go-module-cache.yaml"
-      - ".agents/skills/mo-dev/**"
-      - ".dockerignore"
-      - "Makefile"
-      - "cgo/**"
-      - "go.mod"
-      - "go.sum"
-      - "optools/images/Dockerfile"
-      - "optools/images/gpu/Dockerfile"
-      - "optools/images/gpu/Dockerfile.dev"
-      - "optools/run_ut.sh"
-      - "optools/ut_tools.bash"
-      - "thirdparties/**"
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/native-dependency-check.yml"
-      - ".github/workflows/sca-go-module-cache.yaml"
-      - ".agents/skills/mo-dev/**"
-      - ".dockerignore"
-      - "Makefile"
-      - "cgo/**"
-      - "go.mod"
-      - "go.sum"
-      - "optools/images/Dockerfile"
-      - "optools/images/gpu/Dockerfile"
-      - "optools/images/gpu/Dockerfile.dev"
-      - "optools/run_ut.sh"
-      - "optools/ut_tools.bash"
-      - "thirdparties/**"
   workflow_dispatch:
-
 permissions:
   contents: read
-
-concurrency:
-  group: native-dependency-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  native-contract:
-    name: Native contract (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-22.04
-          - macos-14
-    runs-on: ${{ matrix.os }}
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
     steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Validate native state, staging, and Make DAG
+      - name: Resolve immutable CI builder
+        id: digest
+        shell: bash
         run: |
-          sh -n \
-            cgo/mo-native-provenance \
-            cgo/mo-stage-native-libs \
-            .agents/skills/mo-dev/scripts/mo-cgo-test \
-            .agents/skills/mo-dev/scripts/mo-cgo-test-tags-test \
-            .agents/skills/mo-dev/scripts/mo-cgo-test-worktree-artifacts-test \
-            .agents/skills/mo-dev/scripts/mo-native-build-contract-test \
-            .agents/skills/mo-dev/scripts/mo-native-provenance-test
-          .agents/skills/mo-dev/scripts/mo-native-provenance-test
-          .agents/skills/mo-dev/scripts/mo-native-build-contract-test
-          .agents/skills/mo-dev/scripts/mo-cgo-test-tags-test
-          .agents/skills/mo-dev/scripts/mo-cgo-test-worktree-artifacts-test
-
-  downloader:
-    name: Downloader (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-22.04
-          - macos-14
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Validate portable downloader
-        run: |
-          sh -n thirdparties/download thirdparties/download_test
-          make -C thirdparties test-download
-
-  native-build:
-    name: Native build (${{ matrix.arch }})
+          set -euo pipefail
+          docker pull matrixorigin/matrixone:ci-builder >/dev/null
+          image="$(docker image inspect --format '{{index .RepoDigests 0}}' matrixorigin/matrixone:ci-builder)"
+          case "$image" in *@sha256:*) ;; *) exit 1 ;; esac
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+  candidate:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
-            runner: ubuntu-24.04
-            platform: linux/amd64
-            onnx_library: onnxruntime.so
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            platform: linux/arm64
-            onnx_library: onnxruntime_arm64.so
-    runs-on: ${{ matrix.runner }}
+          - pr: "29057"
+            role: "29057"
+            head: 8e65f80ff74ad00fa6e2b9ebedb7ebc8368a1e75
+            tree: e4fff3db15f7397769a2f2dd70f65a256d4342d1
     steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - name: Build native stage
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - name: Checkout frozen control
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
-          context: .
-          file: optools/images/Dockerfile
-          target: native
-          platforms: ${{ matrix.platform }}
-          load: true
-          tags: matrixone-native-check:${{ matrix.arch }}
-          cache-from: type=gha,scope=matrixone-native-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=matrixone-native-${{ matrix.arch }}
-      - name: Verify native outputs as non-root
-        run: >-
-          docker run --rm --platform "${{ matrix.platform }}"
-          --user 65534:65534
-          matrixone-native-check:${{ matrix.arch }}
-          sh -c
-          'test -f thirdparties/install/lib/${{ matrix.onnx_library }} &&
-          test -r thirdparties/install/lib/${{ matrix.onnx_library }} &&
-          test -f cgo/libmo.so && test -r cgo/libmo.so &&
-          test -f cgo/libmo.a && test -r cgo/libmo.a'
-
-  dockerfile:
-    name: Dockerfile (amd64 + arm64)
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - name: Validate multi-platform Dockerfile
-        run: >-
-          docker buildx build --check
-          --platform linux/amd64,linux/arm64
-          --file optools/images/Dockerfile .
+          ref: ${{ github.sha }}
+          path: control
+          sparse-checkout: .github/ci/codex-ready-bvt
+          persist-credentials: false
+      - name: Checkout exact MatrixOne source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: matrixorigin/matrixone
+          ref: ${{ matrix.head }}
+          path: subject
+          persist-credentials: false
+      - name: Checkout pinned canonical tester
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: matrixorigin/mo-tester
+          ref: 309a0ca650e0c55e90292767fd61e4976818d66d
+          path: tester
+          sparse-checkout: |
+            /lib/
+            /mo.yml
+            /run.yml
+            /log4j.properties
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Run isolated tree-verified candidate BVT
+        shell: bash
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          PR: ${{ matrix.pr }}
+          EXPECTED: ${{ matrix.head }}
+          TREE: ${{ matrix.tree }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/results"
+          printf '%s\n' "$IMAGE" > "$RUNNER_TEMP/results/image.txt"
+          docker pull "$IMAGE" >/dev/null
+          docker run --rm --init --cpus=2 --memory=8g --pids-limit=2048 \
+            -v "$GITHUB_WORKSPACE/subject:/go/src/github.com/matrixorigin/matrixone" \
+            -v "$GITHUB_WORKSPACE/control/.github/ci/codex-ready-bvt:/control:ro" \
+            -v "$GITHUB_WORKSPACE/tester:/tester:ro" \
+            -v "$JAVA_HOME:/jdk:ro" \
+            -v "$RUNNER_TEMP/results:/out" \
+            -w /go/src/github.com/matrixorigin/matrixone \
+            "$IMAGE" bash /control/probe.sh "$PR" "$EXPECTED" "$TREE"
+      - name: Make container evidence readable to the runner
+        if: always()
+        run: |
+          if test -d "$RUNNER_TEMP/results"; then sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/results"; fi
+      - name: Retain bounded validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metadata-contrast-${{ matrix.role }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/results
+          if-no-files-found: warn
+          retention-days: 7
