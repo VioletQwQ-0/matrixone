@@ -1,0 +1,30 @@
+service-type = "LOG"
+data-dir = "/tmp/crc32-upgrade-20261008.tIJ01k/data"
+[[fileservice]]
+name = "LOCAL"
+backend = "DISK-V2"
+data-dir = "/tmp/crc32-upgrade-20261008.tIJ01k/data/local2"
+[[fileservice]]
+name = "SHARED"
+backend = "DISK-V2"
+data-dir = "/tmp/crc32-upgrade-20261008.tIJ01k/data/shared2"
+[log]
+level = "info"
+[observability]
+disableMetric = true
+enable-metric-to-prom = false
+[hakeeper-client]
+service-addresses = ["127.0.0.1:44101"]
+[logservice]
+uuid = "4f5ed8e6-eaa3-4ec1-8740-b63997cbe76b"
+service-host = "127.0.0.1"
+logservice-port = 44101
+raft-port = 44100
+gossip-port = 44102
+gossip-seed-addresses = ["127.0.0.1:44102"]
+[logservice.BootstrapConfig]
+bootstrap-cluster = true
+num-of-log-shards = 1
+num-of-tn-shards = 1
+num-of-log-shard-replicas = 1
+init-hakeeper-members = ["131072:4f5ed8e6-eaa3-4ec1-8740-b63997cbe76b"]

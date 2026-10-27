@@ -1,0 +1,3 @@
+logservices = ["/tmp/crc32-upgrade-20261008.tIJ01k/log.toml"]
+tnservices = ["/tmp/crc32-upgrade-20261008.tIJ01k/tn.toml"]
+cnservices = ["/tmp/crc32-upgrade-20261008.tIJ01k/cn.toml"]
