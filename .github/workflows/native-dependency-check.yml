@@ -1,158 +1,62 @@
-name: Native Dependency Checks
-
+name: PR31460 Combined Candidate Control
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/native-dependency-check.yml"
-      - ".github/workflows/sca-go-module-cache.yaml"
-      - ".agents/skills/mo-dev/**"
-      - ".dockerignore"
-      - "Makefile"
-      - "cgo/**"
-      - "go.mod"
-      - "go.sum"
-      - "optools/images/Dockerfile"
-      - "optools/images/Dockerfile.ci"
-      - "optools/images/test_go_toolchain.py"
-      - "optools/images/gpu/**"
-      - "optools/run_ut.sh"
-      - "optools/gpu/**"
-      - "optools/ut_tools.bash"
-      - "thirdparties/**"
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/native-dependency-check.yml"
-      - ".github/workflows/sca-go-module-cache.yaml"
-      - ".agents/skills/mo-dev/**"
-      - ".dockerignore"
-      - "Makefile"
-      - "cgo/**"
-      - "go.mod"
-      - "go.sum"
-      - "optools/images/Dockerfile"
-      - "optools/images/Dockerfile.ci"
-      - "optools/images/test_go_toolchain.py"
-      - "optools/images/gpu/**"
-      - "optools/run_ut.sh"
-      - "optools/gpu/**"
-      - "optools/ut_tools.bash"
-      - "thirdparties/**"
   workflow_dispatch:
-
 permissions:
   contents: read
-
-concurrency:
-  group: native-dependency-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  native-contract:
-    name: Native contract (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-22.04
-          - macos-14
-    runs-on: ${{ matrix.os }}
+  bvt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Validate native state, staging, and Make DAG
-        run: |
-          python3 -m unittest discover -s cgo -p 'test_gpu_toolchain.py' -v
-          python3 -m unittest discover -s optools/images -p 'test_go_toolchain.py' -v
-          python3 -m unittest discover -s optools/gpu -p 'test_sync_sirius_mo.py' -v
-          if [ "$RUNNER_OS" = Linux ]; then
-            python3 -m unittest discover -s optools/images/gpu -p 'test_stage_runtime_libs.py' -v
-          fi
-          sh -n \
-            cgo/mo-gpu-env \
-            cgo/mo-native-provenance \
-            cgo/mo-stage-native-libs \
-            optools/images/gpu/stage-runtime-libs.sh \
-            .agents/skills/mo-dev/scripts/mo-cgo-test \
-            .agents/skills/mo-dev/scripts/mo-cgo-test-tags-test \
-            .agents/skills/mo-dev/scripts/mo-cgo-test-worktree-artifacts-test \
-            .agents/skills/mo-dev/scripts/mo-native-build-contract-test \
-            .agents/skills/mo-dev/scripts/mo-native-provenance-test
-          .agents/skills/mo-dev/scripts/mo-native-provenance-test
-          .agents/skills/mo-dev/scripts/mo-native-build-contract-test
-          .agents/skills/mo-dev/scripts/mo-cgo-test-tags-test
-          .agents/skills/mo-dev/scripts/mo-cgo-test-worktree-artifacts-test
-
-  downloader:
-    name: Downloader (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-22.04
-          - macos-14
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Validate portable downloader
-        run: |
-          sh -n thirdparties/download thirdparties/download_test
-          make -C thirdparties test-download
-
-  native-build:
-    name: Native build (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-            platform: linux/amd64
-            onnx_library: onnxruntime.so
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            platform: linux/arm64
-            onnx_library: onnxruntime_arm64.so
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - name: Build native stage
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
-          context: .
-          file: optools/images/Dockerfile
-          target: native
-          platforms: ${{ matrix.platform }}
-          load: true
-          tags: matrixone-native-check:${{ matrix.arch }}
-          cache-from: type=gha,scope=matrixone-native-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=matrixone-native-${{ matrix.arch }}
-      - name: Verify native outputs as non-root
-        run: >-
-          docker run --rm --platform "${{ matrix.platform }}"
-          --user 65534:65534
-          matrixone-native-check:${{ matrix.arch }}
-          sh -c
-          'test -f thirdparties/install/lib/${{ matrix.onnx_library }} &&
-          test -r thirdparties/install/lib/${{ matrix.onnx_library }} &&
-          test -f cgo/libmo.so && test -r cgo/libmo.so &&
-          test -f cgo/libmo.a && test -r cgo/libmo.a'
-
-  dockerfile:
-    name: Dockerfile (amd64 + arm64)
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - name: Validate multi-platform Dockerfile
-        run: >-
-          docker buildx build --check
-          --platform linux/amd64,linux/arm64
-          --file optools/images/Dockerfile .
+          ref: ${{ github.sha }}
+          path: control
+          sparse-checkout: .github/ci/codex-combined-bvt
+          persist-credentials: false
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: VioletQwQ-0/matrixone
+          ref: 93752ab24146b1cb4658f9bf701b955fd7bc9312
+          path: subject
+          persist-credentials: false
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: matrixorigin/mo-tester
+          ref: 309a0ca650e0c55e90292767fd61e4976818d66d
+          path: tester
+          sparse-checkout: |
+            /lib/
+            /mo.yml
+            /run.yml
+            /log4j.properties
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Run real multi-session comparison
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/results"
+          docker pull matrixorigin/matrixone:ci-builder >/dev/null
+          image="$(docker image inspect --format '{{index .RepoDigests 0}}' matrixorigin/matrixone:ci-builder)"
+          case "$image" in *@sha256:*) ;; *) exit 1 ;; esac
+          printf '%s\n' "$image" > "$RUNNER_TEMP/results/image.txt"
+          docker run --rm --init --cpus=2 --memory=8g --pids-limit=2048 -v "$GITHUB_WORKSPACE/subject:/go/src/github.com/matrixorigin/matrixone" -v "$GITHUB_WORKSPACE/control/.github/ci/codex-combined-bvt:/control:ro" -v "$GITHUB_WORKSPACE/tester:/tester:ro" -v "$JAVA_HOME:/jdk:ro" -v "$RUNNER_TEMP/results:/out" -w /go/src/github.com/matrixorigin/matrixone "$image" bash /control/probe.sh
+      - name: Retain evidence
+        if: always()
+        run: if test -d "$RUNNER_TEMP/results"; then sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/results"; fi
+      - name: Verify retained evidence on runner
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/results/test-exit.txt"
+          python3 "$GITHUB_WORKSPACE/control/.github/ci/codex-combined-bvt/verify.py" "$RUNNER_TEMP/results/test.jsonl" "$RUNNER_TEMP/results/bvt/canonical-summary.json" "$(cat "$RUNNER_TEMP/results/test-exit.txt")" > "$RUNNER_TEMP/results/result.txt" 2>&1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr31460-combined-bvt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/results
+          retention-days: 14

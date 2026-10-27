@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /go/src/github.com/matrixorigin/matrixone
+git config --global --add safe.directory "$PWD"
+head="$(git rev-parse HEAD)"
+printf 'head=%s\ntree=%s\n' "$head" "$(git rev-parse HEAD^{tree})" > /out/identity.txt
+test "$head" = 93752ab24146b1cb4658f9bf701b955fd7bc9312
+test "$(git rev-parse HEAD^{tree})" = c862219d65240ce822aa6bc06f5c69763f5fba32
+git diff --check > /out/diff-check.log
+if test -x ./optools/images/ci-builder-fingerprint.sh && test -r /mo-prebuilt/thirdparties.fingerprint; then
+  ./optools/images/ci-builder-fingerprint.sh > /out/expected-native.fingerprint
+  cp /mo-prebuilt/thirdparties.fingerprint /out/image-native.fingerprint
+  if cmp -s /out/expected-native.fingerprint /out/image-native.fingerprint; then cp -a /mo-prebuilt/thirdparties/install thirdparties/install; fi
+fi
+export GOWORK=off GOMAXPROCS=2 GOMEMLIMIT=6GiB CGO_ENABLED=1
+if ! make -j2 cgo > /out/native-build.log 2>&1; then echo 'BLOCKED native build' > /out/result.txt; exit 2; fi
+export CGO_CFLAGS="-I$PWD/cgo -I$PWD/thirdparties/install/include"
+export CGO_LDFLAGS="-L$PWD/thirdparties/install/lib"
+export LD_LIBRARY_PATH="$PWD/cgo:$PWD/thirdparties/install/lib"
+set +e
+.agents/skills/mo-dev/scripts/mo-cgo-test -json -p=1 -count=1 -timeout=25m -run '^(TestMigrate.*|TestQueryServiceMigrate.*|TestCanceledMigrationAdmission.*|TestDependentPreparedMigrationProtocol|TestPreparedFieldHistoryCacheAndMigration|TestRoutineMigrateConnectionFromRejectsUserLevelLocks|TestRenameUserIdentity|TestProxyRenameUserMigrationRejectsChangedPrincipal|TestRenameUserGrammar)$' ./pkg/frontend ./pkg/proxy ./pkg/embed ./pkg/sql/parsers/dialect/mysql > /out/tests.jsonl 2> /out/tests.stderr
+tests=$?
+go vet -all -mod=readonly -p=1 ./pkg/frontend ./pkg/proxy ./pkg/embed ./pkg/pb/query ./pkg/defines ./pkg/sql/parsers/dialect/mysql ./pkg/sql/plan > /out/vet.log 2>&1
+vet=$?
+race=125
+if [ "$tests" = 0 ]; then
+ .agents/skills/mo-dev/scripts/mo-cgo-test -race -json -p=1 -count=1 -timeout=25m -run '^TestProxyRenameUserMigrationRejectsChangedPrincipal$' ./pkg/proxy > /out/race.jsonl 2> /out/race.stderr
+ race=$?
+fi
+set -e
+printf 'tests=%s\nvet=%s\nrace=%s\n' "$tests" "$vet" "$race" > /out/result.txt
+if [ "$tests" != 0 ] || [ "$vet" != 0 ] || [ "$race" != 0 ]; then exit 1; fi
