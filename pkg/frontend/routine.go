@@ -714,6 +714,17 @@ func (rt *Routine) migrateConnectionTo(ctx context.Context, req *query.MigrateCo
 		return moerr.NewInternalErrorNoCtx("cannot start migrate as routine has been closed")
 	}
 	defer rt.mc.endOperation()
+	ses := rt.getSession()
+	if ses == nil {
+		return moerr.GetOkExpectedNotSafeToStartTransfer()
+	}
+	tenant := ses.GetTenantInfo()
+	if !req.SourcePrincipalExported || tenant == nil ||
+		tenant.GetTenantID() != req.SourceAccountID || tenant.GetUserID() != req.SourceUserID {
+		// The handshake may resolve the old username to a different user after
+		// a rename. Never attach the source session to that new principal.
+		return moerr.GetOkExpectedNotSafeToStartTransfer()
+	}
 	if !req.LastInsertIDExported {
 		// Do not consume the one-shot migration slot for a request whose source
 		// snapshot cannot prove LAST_INSERT_ID state is authoritative.
@@ -721,7 +732,6 @@ func (rt *Routine) migrateConnectionTo(ctx context.Context, req *query.MigrateCo
 	}
 
 	rt.mc.migrateOnce.Do(func() {
-		ses := rt.getSession()
 		ses.UpdateDebugString()
 		rt.mc.migrateErr = Migrate(operationCtx, ses, req)
 	})
@@ -793,6 +803,11 @@ func (rt *Routine) migrateConnectionFromActionWithCapabilities(
 		// a successful handoff to silently reset LAST_INSERT_ID().
 		return moerr.GetOkExpectedNotSafeToStartTransfer()
 	}
+	if ses.GetTenantInfo() == nil {
+		// The target must authenticate the same principal before it can safely
+		// accept a migrated session.
+		return moerr.GetOkExpectedNotSafeToStartTransfer()
+	}
 	if states := function.UserLevelLocksForMigration(ses.proc); len(states) > 0 {
 		return moerr.NewInternalErrorNoCtx("cannot migrate connection while user-level locks are held")
 	}
@@ -837,6 +852,10 @@ func (rt *Routine) migrateConnectionFromActionWithCapabilities(
 	resp.LastAffectedRows = ses.GetLastAffectedRows()
 	resp.LastInsertID = ses.GetLastInsertID()
 	resp.LastInsertIDExported = true
+	tenant := ses.GetTenantInfo()
+	resp.SourceAccountID = tenant.GetTenantID()
+	resp.SourceUserID = tenant.GetUserID()
+	resp.SourcePrincipalExported = true
 	requiredVersions := make([]int64, len(prepareStmts))
 	for i, st := range prepareStmts {
 		if st == nil || st.rewritePolicyInvalidated.Load() {

@@ -731,6 +731,59 @@ func TestMigrateConnectionFromPreservesLastAffectedRows(t *testing.T) {
 	require.True(t, resp.LastInsertIDExported)
 	require.Equal(t, uint64(11), resp.FoundRows)
 	require.True(t, resp.TempTableStateExported)
+	require.True(t, resp.SourcePrincipalExported)
+	require.Equal(t, ses.GetTenantInfo().GetTenantID(), resp.SourceAccountID)
+	require.Equal(t, ses.GetTenantInfo().GetUserID(), resp.SourceUserID)
+}
+
+func TestMigrateConnectionRejectsRenamedUsernameResolvedToDifferentUser(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	sourceSession := newTestSession(t, ctrl)
+	sourceSession.tenant = &TenantInfo{
+		Tenant: "sys", TenantID: 17, User: "a", UserID: 41,
+		DefaultRole: "role_a", DefaultRoleID: 101,
+	}
+	sourceRoutine := &Routine{mc: newMigrateController()}
+	sourceRoutine.setSession(sourceSession)
+
+	snapshot := &query.MigrateConnFromResponse{}
+	require.NoError(t, sourceRoutine.migrateConnectionFrom(snapshot))
+	require.True(t, snapshot.SourcePrincipalExported)
+	require.Equal(t, uint32(17), snapshot.SourceAccountID)
+	require.Equal(t, uint32(41), snapshot.SourceUserID)
+
+	// After RENAME USER a TO moved, b TO a, the same handshake can authenticate
+	// b under the old name a. Its different ID and role must not replace a's
+	// source session when Proxy transfers the connection.
+	for _, tc := range []struct {
+		name                    string
+		accountID               uint32
+		userID                  uint32
+		sourcePrincipalExported bool
+	}{
+		{name: "different account", accountID: 18, userID: 41, sourcePrincipalExported: true},
+		{name: "different user", accountID: 17, userID: 42, sourcePrincipalExported: true},
+		{name: "missing source principal", accountID: 17, userID: 41},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			targetSession := newTestSession(t, gomock.NewController(t))
+			targetSession.tenant = &TenantInfo{
+				Tenant: "sys", TenantID: tc.accountID, User: "a", UserID: tc.userID,
+				DefaultRole: "role_b", DefaultRoleID: 102,
+			}
+			targetRoutine := &Routine{mc: newMigrateController()}
+			targetRoutine.setSession(targetSession)
+			err := targetRoutine.migrateConnectionTo(context.Background(), &query.MigrateConnToRequest{
+				LastInsertIDExported:    snapshot.LastInsertIDExported,
+				SourceAccountID:         snapshot.SourceAccountID,
+				SourceUserID:            snapshot.SourceUserID,
+				SourcePrincipalExported: tc.sourcePrincipalExported,
+			})
+			require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedNotSafeToStartTransfer))
+			require.Empty(t, targetSession.GetDatabaseName())
+			require.Empty(t, targetSession.prepareStmts)
+		})
+	}
 }
 
 func TestMigrateConnectionFromRejectsMissingLastInsertIDCapability(t *testing.T) {
