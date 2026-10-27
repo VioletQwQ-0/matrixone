@@ -1,0 +1,244 @@
+diff --git a/docs/design/pr-28935-crc32-json-compatibility.md b/docs/design/pr-28935-crc32-json-compatibility.md
+index c5a34e750a..ced2663b16 100644
+--- a/docs/design/pr-28935-crc32-json-compatibility.md
++++ b/docs/design/pr-28935-crc32-json-compatibility.md
+@@ -10,12 +10,19 @@ PR data.
+ | Identity | Binding and execution |
+ | --- | --- |
+ | CRC32 overload 0 | Existing catalog/wire expressions hash binary JSON; ordinary non-JSON calls retain their original bytes and scalar casts. |
+-| CRC32 overload 1 | New JSON or unresolved bindings hash normalized MarshalJSON bytes for JSON; requires MORPC v130. |
++| CRC32 overload 1 | New JSON or unresolved bindings hash normalized MarshalJSON bytes for JSON; requires MORPC v135. |
+ 
+ The result stays UINT64; the executor also retains the historic UINT32 wrapper.
+ A stored legacy generated value can intentionally differ from a freshly bound
+-`CRC32(j)` query. Existing expressions are never silently upgraded, including
+-INSERT, UPDATE, REPLACE, ODKU, prepared rebinding and index maintenance.
++`CRC32(j)` query. Existing catalog expressions are never silently upgraded.
++INSERT (including multi-table INSERT), LOAD, REPLACE and UPDATE targeting a
++legacy stored generated CRC32(JSON) column are rejected until an explicit table
++rebuild, so old values and their indexes cannot mix with newly computed
++text-byte values. Physical RESTORE may replay the persisted legacy identity and
++values. Reads and source-side rebuild queries remain available. Rebuild into a
++newly declared table using the current expression identity and copy only base
++input columns; `LIKE` and internal ALTER COPY preserve the legacy identity and
++do not clear the write fence.
+ 
+ ## Boundaries
+ 
+@@ -91,10 +98,15 @@ Executor and binding tests distinguish both identities with fixed independent
+ checksum oracles. Codec/feature tests cover unresolved types and folded source
+ expressions. Sender tests isolate a new coordinator and old target. Catalog
+ fixtures must preserve identity through DML, COPY, LIKE and prepared rebinding.
+-The function BVT covers generated columns, indexes, DML, prepared reads and ALTER.
+-Real two-binary rolling upgrade, persistent old-table DML after restart and
+-post-floor downgrade rejection remain separate environment acceptance tests;
+-mock version values and same-version CI do not prove them.
++The function BVT covers current generated columns, indexes, DML, prepared reads
++and ALTER. The cross-version generated-column acceptance must additionally
++verify that a pre-change table keeps its old indexed value after upgrade,
++writes into that table fail with the rebuild-required error, a newly declared
++table rebuilt from its base columns materializes only the new checksum, and
++subsequent writes to that table succeed. Real two-binary rolling upgrade,
++persistent old-table behavior after restart and post-floor downgrade rejection
++remain separate environment acceptance tests; mock version values and
++same-version CI do not prove them.
+ 
+ ## Historical candidate snapshot on 2026-10-19 (superseded by main 743e749)
+ 
+diff --git a/pkg/sql/plan/bind_insert.go b/pkg/sql/plan/bind_insert.go
+index dcd99595f2..0ea74d8ccf 100644
+--- a/pkg/sql/plan/bind_insert.go
++++ b/pkg/sql/plan/bind_insert.go
+@@ -69,6 +69,11 @@ func (builder *QueryBuilder) bindInsert(stmt *tree.Insert, bindCtx *BindContext)
+ 	if err != nil {
+ 		return 0, err
+ 	}
++	if !stmt.IsRestore {
++		if err = rejectLegacyCRC32StoredGeneratedWrite(builder.GetContext(), dmlCtx.tableDefs[0]); err != nil {
++			return 0, err
++		}
++	}
+ 	targetDB := string(stmt.TargetDatabaseName)
+ 	targetTable := string(stmt.TargetTableName)
+ 	if targetTable == "" {
+diff --git a/pkg/sql/plan/bind_multi_insert.go b/pkg/sql/plan/bind_multi_insert.go
+index 879288760b..7eac2c7f18 100644
+--- a/pkg/sql/plan/bind_multi_insert.go
++++ b/pkg/sql/plan/bind_multi_insert.go
+@@ -519,6 +519,9 @@ func (builder *QueryBuilder) resolveMultiInsertTarget(target *tree.MultiInsertTa
+ 		return nil, err
+ 	}
+ 	tableDef := dmlCtx.tableDefs[0]
++	if err := rejectLegacyCRC32StoredGeneratedWrite(sysCtx, tableDef); err != nil {
++		return nil, err
++	}
+ 
+ 	targetDB := string(target.Table.SchemaName)
+ 	if targetDB == "" {
+diff --git a/pkg/sql/plan/bind_replace.go b/pkg/sql/plan/bind_replace.go
+index 118d59899c..e2f51a658a 100644
+--- a/pkg/sql/plan/bind_replace.go
++++ b/pkg/sql/plan/bind_replace.go
+@@ -40,6 +40,9 @@ func (builder *QueryBuilder) bindReplace(stmt *tree.Replace, bindCtx *BindContex
+ 	if err != nil {
+ 		return 0, err
+ 	}
++	if err = rejectLegacyCRC32StoredGeneratedWrite(builder.GetContext(), dmlCtx.tableDefs[0]); err != nil {
++		return 0, err
++	}
+ 	targetDB := string(stmt.TargetDatabaseName)
+ 	targetTable := string(stmt.TargetTableName)
+ 	if targetTable == "" {
+diff --git a/pkg/sql/plan/bind_update.go b/pkg/sql/plan/bind_update.go
+index aba4b70d02..bf5ae1cc9d 100644
+--- a/pkg/sql/plan/bind_update.go
++++ b/pkg/sql/plan/bind_update.go
+@@ -423,6 +423,9 @@ func (builder *QueryBuilder) bindUpdate(stmt *tree.Update, bindCtx *BindContext)
+ 	updatedTargetCount := 0
+ 	for i := range dmlCtx.aliases {
+ 		if len(dmlCtx.updateCol2Expr[i]) > 0 {
++			if err = rejectLegacyCRC32StoredGeneratedWrite(builder.GetContext(), dmlCtx.tableDefs[i]); err != nil {
++				return 0, err
++			}
+ 			updatedTargetCount++
+ 		}
+ 	}
+diff --git a/pkg/sql/plan/build_dml_util.go b/pkg/sql/plan/build_dml_util.go
+index dbacb24b3d..28eb0d7677 100644
+--- a/pkg/sql/plan/build_dml_util.go
++++ b/pkg/sql/plan/build_dml_util.go
+@@ -288,6 +288,9 @@ func buildInsertPlans(
+ 
+ // buildUpdatePlans  build update plan.
+ func buildUpdatePlans(ctx CompilerContext, builder *QueryBuilder, bindCtx *BindContext, updatePlanCtx *dmlPlanCtx, addAffectedRows bool) error {
++	if err := rejectLegacyCRC32StoredGeneratedWrite(ctx.GetContext(), updatePlanCtx.tableDef); err != nil {
++		return err
++	}
+ 	var err error
+ 	// sink_scan -> project -> [agg] -> [filter] -> sink
+ 	lastNodeId := appendSinkScanNode(builder, bindCtx, updatePlanCtx.sourceStep)
+diff --git a/pkg/sql/plan/build_insert.go b/pkg/sql/plan/build_insert.go
+index 8c330b1360..2ba685664b 100644
+--- a/pkg/sql/plan/build_insert.go
++++ b/pkg/sql/plan/build_insert.go
+@@ -80,6 +80,11 @@ func buildInsert(stmt *tree.Insert, ctx CompilerContext, isReplace bool, isPrepa
+ 		tblInfo: tblInfo,
+ 	}
+ 	tableDef := tblInfo.tableDefs[0]
++	if !stmt.IsRestore {
++		if err = rejectLegacyCRC32StoredGeneratedWrite(ctx.GetContext(), tableDef); err != nil {
++			return nil, err
++		}
++	}
+ 
+ 	builder := NewQueryBuilder(plan.Query_SELECT, ctx, isPrepareStmt, false)
+ 	// INSERT IGNORE is a statement-level conversion policy and may coexist with
+diff --git a/pkg/sql/plan/build_load.go b/pkg/sql/plan/build_load.go
+index c243b0dd56..fec968a917 100644
+--- a/pkg/sql/plan/build_load.go
++++ b/pkg/sql/plan/build_load.go
+@@ -627,6 +627,9 @@ func buildLoad(stmt *tree.Load, ctx CompilerContext, isPrepareStmt bool) (*Plan,
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	if err := rejectLegacyCRC32StoredGeneratedWrite(ctx.GetContext(), tblInfo.tableDefs[0]); err != nil {
++		return nil, err
++	}
+ 
+ 	// Note on Hive partitioned external tables: LOAD DATA into any external
+ 	// table (hive or not) is rejected by checkTableType inside getDmlTableInfo
+diff --git a/pkg/sql/plan/crc32_catalog_compat.go b/pkg/sql/plan/crc32_catalog_compat.go
+index 2c8470b564..644d6d88c4 100644
+--- a/pkg/sql/plan/crc32_catalog_compat.go
++++ b/pkg/sql/plan/crc32_catalog_compat.go
+@@ -49,6 +49,22 @@ func containsLegacyCRC32(owner *planpb.Expr) bool {
+ 	return found
+ }
+ 
++// A legacy stored generated value was materialized with binary-JSON CRC32.
++// Keep reads and source-side rebuilds available, but do not let new DML mix
++// text-byte values into the same column and its indexes. A newly authored
++// table binds overload 1 and is writable after the normal protocol admission.
++func rejectLegacyCRC32StoredGeneratedWrite(ctx context.Context, table *planpb.TableDef) error {
++	if table == nil {
++		return nil
++	}
++	for _, col := range table.Cols {
++		if col != nil && col.GeneratedCol != nil && col.GeneratedCol.IsStored && containsLegacyCRC32(col.GeneratedCol.Expr) {
++			return moerr.NewNotSupported(ctx, "writing a table with a legacy CRC32 JSON stored generated column requires an explicit table rebuild")
++		}
++	}
++	return nil
++}
++
+ // CHANGE/MODIFY repeats the column definition even for a rename or reorder.
+ // Preserve its bound identity when the expression and type are unchanged. A
+ // semantic conversion needs an explicit rebuild, never a metadata-only rewrite.
+diff --git a/pkg/sql/plan/crc32_catalog_compat_test.go b/pkg/sql/plan/crc32_catalog_compat_test.go
+index 6bb8fdcff5..eceb16e74e 100644
+--- a/pkg/sql/plan/crc32_catalog_compat_test.go
++++ b/pkg/sql/plan/crc32_catalog_compat_test.go
+@@ -310,13 +310,14 @@ func TestCRC32PreparedAndLegacyBinding(t *testing.T) {
+ 	}
+ }
+ 
+-func TestCRC32LegacyGeneratedDMLPlans(t *testing.T) {
++func TestCRC32LegacyGeneratedDMLRequiresRebuild(t *testing.T) {
+ 	for _, sql := range []string{
+ 		`insert into constraint_test.t_on_update_gen(id,val,updated_at) values(1,'{"t1":"a"}',null)`,
+ 		`insert into constraint_test.t_on_update_gen(id,val,updated_at) select 2,val,updated_at from constraint_test.t_on_update_gen`,
+ 		`update constraint_test.t_on_update_gen set val='{"t1":"b"}' where id=1`,
+ 		`replace into constraint_test.t_on_update_gen(id,val,updated_at) values(1,'{"t1":"a"}',null)`,
+ 		`insert into constraint_test.t_on_update_gen(id,val,updated_at) values(1,'{"t1":"a"}',null) on duplicate key update val=values(val)`,
++		`insert all into constraint_test.t_on_update_gen(id,val,updated_at) values (id,val,updated_at) select id,val,updated_at from constraint_test.t_on_update_gen`,
+ 	} {
+ 		t.Run(sql, func(t *testing.T) {
+ 			mock := NewMockOptimizer(true, newPlanTestProcess(t))
+@@ -330,23 +331,37 @@ func TestCRC32LegacyGeneratedDMLPlans(t *testing.T) {
+ 			expr.GetF().Args[0].GetCol().Name = "val"
+ 			base.Cols[generatedPos].GeneratedCol = &planpb.GeneratedCol{Expr: expr, OriginString: "crc32(val)", IsStored: true}
+ 			base.Cols[mockTableColPos(t, base, "updated_at")].OnUpdate = nil
++			original := proto.Clone(base).(*planpb.TableDef)
+ 			built, err := runOneStmt(mock, t, sql)
+-			require.NoError(t, err)
++			require.Nil(t, built)
++			require.ErrorContains(t, err, "legacy CRC32 JSON stored generated column requires an explicit table rebuild")
++			require.True(t, proto.Equal(original, base), "rejected DML must not mutate catalog metadata")
++
++			base.Cols[generatedPos].GeneratedCol.Expr.GetF().Func.Obj = function.EncodeOverloadID(function.CRC32, function.CRC32JSONTextOverload)
++			built, err = runOneStmt(mock, t, sql)
++			require.NoError(t, err, "new-semantics generated columns remain writable")
++			require.NotNil(t, built)
+ 			features, err := planpb.RequiredRemoteExpressionFeatures(built)
+ 			require.NoError(t, err)
+-			require.False(t, features.CRC32JSONTextBytes, "DML must not rebind legacy catalog expressions")
+-			found := false
+-			for _, n := range built.GetQuery().Nodes {
+-				for _, e := range n.ProjectList {
+-					found = found || containsLegacyCRC32(e)
+-				}
+-			}
+-			require.True(t, found, "production DML must evaluate the generated expression")
+-			require.True(t, containsLegacyCRC32(base.Cols[generatedPos].GeneratedCol.Expr))
++			require.True(t, features.CRC32JSONTextBytes, "DML must retain the newly declared execution identity")
+ 		})
+ 	}
+ }
+ 
++func TestCRC32LegacyGeneratedWriteGateAllowsVirtualColumns(t *testing.T) {
++	virtual := &planpb.TableDef{Cols: []*planpb.ColDef{{GeneratedCol: &planpb.GeneratedCol{
++		Expr: legacyCRC32Expr(), IsStored: false,
++	}}}}
++	require.NoError(t, rejectLegacyCRC32StoredGeneratedWrite(context.Background(), virtual))
++
++	legacyScalar := legacyCRC32Expr()
++	legacyScalar.GetF().Args[0].Typ.Id = int32(types.T_varchar)
++	scalar := &planpb.TableDef{Cols: []*planpb.ColDef{{GeneratedCol: &planpb.GeneratedCol{
++		Expr: legacyScalar, IsStored: true,
++	}}}}
++	require.NoError(t, rejectLegacyCRC32StoredGeneratedWrite(context.Background(), scalar))
++}
++
+ func TestCRC32PersistedDDLAdmissionBeforeFold(t *testing.T) {
+ 	mock := NewMockOptimizer(false, newPlanTestProcess(t))
+ 	proc := mock.ctxt.GetProcess()
