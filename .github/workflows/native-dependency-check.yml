@@ -55,7 +55,7 @@ jobs:
             -v "$GITHUB_WORKSPACE/subject:/subject" \
             -v "$GITHUB_WORKSPACE/control/.github/ci/codex-ready-static:/control:ro" \
             -v "$out:/out" -w /subject "$image" bash -c \
-            'set -e; python3 -m pip install --disable-pip-version-check --target /tmp/pr28935-python PyMySQL==1.1.1 > /out/python-install.log 2>&1; PYTHONPATH=/tmp/pr28935-python python3 /control/lifecycle.py > /out/controller.log 2>&1'
+            'set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update > /out/python-install.log 2>&1; apt-get install -y --no-install-recommends python3 python3-pymysql >> /out/python-install.log 2>&1; python3 /control/lifecycle.py > /out/controller.log 2>&1'
       - name: Make evidence readable
         if: always()
         run: |
