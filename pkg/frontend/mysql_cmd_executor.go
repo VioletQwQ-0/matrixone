@@ -6210,10 +6210,9 @@ func executeStmt(ses *Session,
 		ses.SetShowStmtType(ShowTableStatus)
 		ses.SetData(nil)
 	case *tree.ShowGrants:
-		if len(st.Username) == 0 {
-			st.Username = execCtx.userName
-		}
-		if len(st.Hostname) == 0 || st.Hostname == "%" {
+		// Keep implicit/current-user requests unnamed so the planner can bind
+		// them to the authenticated user ID, even if the login name is reused.
+		if st.Username != "" && (st.Hostname == "" || st.Hostname == "%") {
 			st.Hostname = rootHost
 		}
 	}

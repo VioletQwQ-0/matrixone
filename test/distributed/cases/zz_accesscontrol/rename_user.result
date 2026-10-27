@@ -1,0 +1,132 @@
+drop database if exists rename_user_bvt_db;
+drop user if exists rename_bvt_src, rename_bvt_dst, rename_bvt_moved, rename_bvt_taken, rename_bvt_tmp, rename_bvt_end;
+drop role if exists rename_bvt_reader, rename_bvt_other, rename_bvt_extra;
+drop account if exists rename_bvt_tenant;
+create database rename_user_bvt_db;
+create table rename_user_bvt_db.source_only (v int);
+create table rename_user_bvt_db.other_only (v int);
+insert into rename_user_bvt_db.source_only values (11);
+insert into rename_user_bvt_db.other_only values (22);
+create role rename_bvt_reader;
+create role rename_bvt_other;
+create role rename_bvt_extra;
+grant connect on account * to rename_bvt_reader;
+grant connect on account * to rename_bvt_other;
+grant select on table rename_user_bvt_db.source_only to rename_bvt_reader;
+grant select on table rename_user_bvt_db.other_only to rename_bvt_other;
+create user 'rename_bvt_src'@'%' identified by 'pw31460';
+create user rename_bvt_taken identified by 'pw31460';
+grant rename_bvt_reader to rename_bvt_src;
+grant rename_bvt_other to rename_bvt_taken;
+set default role rename_bvt_reader to rename_bvt_src;
+set default role rename_bvt_other to rename_bvt_taken;
+create table rename_user_bvt_db.identity_before as select user_id, user_host, authentication_string, default_role from mo_catalog.mo_user where user_name = 'rename_bvt_src';
+select v from rename_user_bvt_db.source_only;
+➤ v[4,32,0]  𝄀
+11
+rename user 'rename_bvt_src'@'%' to 'rename_bvt_dst'@'%';
+select count(*) from mo_catalog.mo_user u join rename_user_bvt_db.identity_before b on u.user_id = b.user_id and u.user_host = b.user_host and u.authentication_string = b.authentication_string and u.default_role = b.default_role where u.user_name = 'rename_bvt_dst';
+➤ count(*)[-5,64,0]  𝄀
+1
+select count(*) from mo_catalog.mo_user where user_name = 'rename_bvt_src';
+➤ count(*)[-5,64,0]  𝄀
+0
+select count(*) from mo_catalog.mo_user u join mo_catalog.mo_user_grant g on u.user_id = g.user_id join mo_catalog.mo_role r on g.role_id = r.role_id where u.user_name = 'rename_bvt_dst' and r.role_name = 'rename_bvt_reader';
+➤ count(*)[-5,64,0]  𝄀
+1
+grant rename_bvt_extra to rename_bvt_dst;
+select count(*) from mo_catalog.mo_user u join mo_catalog.mo_user_grant g on u.user_id = g.user_id join mo_catalog.mo_role r on g.role_id = r.role_id where u.user_name = 'rename_bvt_dst' and r.role_name = 'rename_bvt_extra';
+➤ count(*)[-5,64,0]  𝄀
+1
+revoke rename_bvt_extra from rename_bvt_dst;
+select count(*) from mo_catalog.mo_user u join mo_catalog.mo_user_grant g on u.user_id = g.user_id join mo_catalog.mo_role r on g.role_id = r.role_id where u.user_name = 'rename_bvt_dst' and r.role_name = 'rename_bvt_extra';
+➤ count(*)[-5,64,0]  𝄀
+0
+select current_role();
+➤ current_role()[12,65535,0]  𝄀
+rename_bvt_reader
+select v from rename_user_bvt_db.source_only;
+➤ v[4,32,0]  𝄀
+11
+rename user rename_bvt_dst to rename_bvt_tmp, rename_bvt_taken to rename_bvt_tmp;
+invalid input: RENAME USER destination already exists
+select count(*) from mo_catalog.mo_user where user_name in ('rename_bvt_dst', 'rename_bvt_taken');
+➤ count(*)[-5,64,0]  𝄀
+2
+select count(*) from mo_catalog.mo_user where user_name = 'rename_bvt_tmp';
+➤ count(*)[-5,64,0]  𝄀
+0
+rename user rename_bvt_dst to rename_bvt_tmp, rename_bvt_tmp to rename_bvt_end;
+select count(*) from mo_catalog.mo_user u join rename_user_bvt_db.identity_before b on u.user_id = b.user_id where u.user_name = 'rename_bvt_end';
+➤ count(*)[-5,64,0]  𝄀
+1
+rename user rename_bvt_end to rename_bvt_moved, rename_bvt_taken to rename_bvt_src;
+select v from rename_user_bvt_db.source_only;
+➤ v[4,32,0]  𝄀
+11
+select v from rename_user_bvt_db.other_only;
+internal error: do not have privilege to execute the statement
+show grants;
+➤ Grants for current user[12,-1,0]  𝄀
+GRANT connect ON account  `rename_bvt_moved`@`localhost`  𝄀
+GRANT connect ON account  `rename_bvt_moved`@`localhost`  𝄀
+GRANT select ON table rename_user_bvt_db.source_only `rename_bvt_moved`@`localhost`
+select v from rename_user_bvt_db.other_only;
+➤ v[4,32,0]  𝄀
+22
+select v from rename_user_bvt_db.source_only;
+internal error: do not have privilege to execute the statement
+rename user rename_bvt_moved to rename_bvt_dst;
+internal error: do not have privilege to execute the statement
+rename user rename_bvt_missing to rename_bvt_dst;
+invalid input: RENAME USER source does not exist
+rename user rename_bvt_moved to rename_bvt_src;
+invalid input: RENAME USER destination already exists
+rename user rename_bvt_moved@'remote' to rename_bvt_dst;
+invalid input: RENAME USER cannot change host
+rename user root to rename_bvt_dst;
+invalid input: cannot rename protected user
+rename user rename_bvt_moved to root;
+invalid input: cannot rename protected user
+rename user rename_bvt_moved to 'rename?bad';
+invalid input: RENAME USER destination cannot reliably roundtrip through login
+select count(*) from mo_catalog.mo_user u join rename_user_bvt_db.identity_before b on u.user_id = b.user_id where u.user_name = 'rename_bvt_moved';
+➤ count(*)[-5,64,0]  𝄀
+1
+grant create view on database rename_user_bvt_db to rename_bvt_reader;
+use rename_user_bvt_db;
+create function rename_user_bvt_db.rename_f() returns int language sql as '1';
+rename user rename_bvt_moved to rename_bvt_dst;
+invalid input: RENAME USER has stored routine DEFINER references
+drop function rename_user_bvt_db.rename_f();
+use rename_user_bvt_db;
+create procedure rename_user_bvt_db.rename_p() 'begin select 1; end';
+rename user rename_bvt_moved to rename_bvt_dst;
+invalid input: RENAME USER has stored routine DEFINER references
+drop procedure rename_user_bvt_db.rename_p;
+rename user rename_bvt_moved to rename_bvt_dst;
+rename user rename_bvt_dst to rename_bvt_moved;
+select count(*) from mo_catalog.mo_user u join rename_user_bvt_db.identity_before b on u.user_id = b.user_id where u.user_name = 'rename_bvt_moved';
+➤ count(*)[-5,64,0]  𝄀
+1
+create account rename_bvt_tenant admin_name 'admin' identified by 'pw31460';
+create user rename_bvt_moved identified by 'pw31460';
+rename user rename_bvt_moved to rename_bvt_dst;
+select count(*) from mo_catalog.mo_user where user_name = 'rename_bvt_dst';
+➤ count(*)[-5,64,0]  𝄀
+1
+select count(*) from mo_catalog.mo_user where user_name = 'rename_bvt_moved';
+➤ count(*)[-5,64,0]  𝄀
+0
+rename user admin to rename_bvt_end;
+invalid input: cannot rename administrator
+select count(*) from mo_catalog.mo_user u join rename_user_bvt_db.identity_before b on u.user_id = b.user_id where u.user_name = 'rename_bvt_moved';
+➤ count(*)[-5,64,0]  𝄀
+1
+drop account rename_bvt_tenant;
+drop user rename_bvt_src, rename_bvt_moved;
+drop role rename_bvt_reader, rename_bvt_other, rename_bvt_extra;
+drop database rename_user_bvt_db;
+select count(*) from mo_catalog.mo_user where user_name in ('rename_bvt_src', 'rename_bvt_dst', 'rename_bvt_moved', 'rename_bvt_taken', 'rename_bvt_tmp', 'rename_bvt_end');
+➤ count(*)[-5,64,0]  𝄀
+0
