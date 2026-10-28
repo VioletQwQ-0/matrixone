@@ -120,7 +120,7 @@ jobs:
           trap 'kill "$service_pid" 2>/dev/null || true; wait "$service_pid" 2>/dev/null || true' EXIT
           ready=0
           for _ in $(seq 1 300); do
-            if MYSQL_PWD=111 mysql -h 127.0.0.1 -P 6001 -u dump -e 'select 1' > /dev/null 2>&1; then ready=1; break; fi
+            if MYSQL_PWD=111 mysql --default-character-set=utf8mb4 -h 127.0.0.1 -P 6001 -u dump -e 'select 1' > "$RUNNER_TEMP/pr28275/readiness.log" 2>&1; then ready=1; break; fi
             kill -0 "$service_pid" 2>/dev/null || break
             sleep 1
           done
