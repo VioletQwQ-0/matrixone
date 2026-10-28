@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kind: [rename, show, inner_object, static]
+        kind: [rename, show, inner_object, static, snapshot]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -25,7 +25,7 @@ jobs:
           path: subject
           persist-credentials: false
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-        if: matrix.kind != 'static'
+        if: matrix.kind != 'static' && matrix.kind != 'snapshot'
         with:
           repository: matrixorigin/mo-tester
           ref: 309a0ca650e0c55e90292767fd61e4976818d66d
@@ -38,7 +38,7 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - uses: actions/setup-java@v4
-        if: matrix.kind != 'static'
+        if: matrix.kind != 'static' && matrix.kind != 'snapshot'
         with:
           distribution: temurin
           java-version: '17'
@@ -53,7 +53,7 @@ jobs:
           case "$image" in *@sha256:*) ;; *) exit 1 ;; esac
           printf '%s\n' "$image" > "$RUNNER_TEMP/results/image.txt"
           args=(--rm --init --cpus=2 --memory=8g --pids-limit=2048 -v "$GITHUB_WORKSPACE/subject:/go/src/github.com/matrixorigin/matrixone" -v "$GITHUB_WORKSPACE/control/.github/ci/pr31460/$KIND:/control:ro" -v "$RUNNER_TEMP/results:/out" -w /go/src/github.com/matrixorigin/matrixone)
-          if [ "$KIND" != static ]; then args+=(-v "$GITHUB_WORKSPACE/tester:/tester:ro" -v "$JAVA_HOME:/jdk:ro"); fi
+          if [ "$KIND" != static ] && [ "$KIND" != snapshot ]; then args+=(-v "$GITHUB_WORKSPACE/tester:/tester:ro" -v "$JAVA_HOME:/jdk:ro"); fi
           docker run "${args[@]}" "$image" bash /control/probe.sh
       - name: Verify rename evidence
         if: always() && matrix.kind == 'rename'
