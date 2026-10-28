@@ -35,6 +35,9 @@ import (
 func TestPreparedFieldHistoryCacheAndMigration(t *testing.T) {
 	ses, prepared, cw, ec := newPreparedExecuteEnvForSQL(t, 25301,
 		"select field(case when ? then ? else null end, 'Z', 'A', 'a')")
+	setPreparedMigrationTestPrincipal(ses)
+	prepared.rewritePolicyCaptured = true
+	prepared.rewritePolicyGeneration = ses.rewritePolicyGeneration
 	prepared.proc = cw.proc
 	t.Cleanup(func() { cw.proc.SetPrepareParams(nil); ses.Close() })
 	original := prepared.PreparePlan.String()
@@ -150,6 +153,7 @@ func TestPreparedFieldHistoryCacheAndMigration(t *testing.T) {
 		defer free()
 		require.Equal(t, uint64(2), vector.GetFixedAtNoTypeCheck[uint64](result, 0))
 	}()
+	require.NotNil(t, prepared.fieldTypes, "the FIELD migration guard needs retained type history")
 	rt := &Routine{mc: newMigrateController()}
 	rt.setSession(ses)
 	response := &query.MigrateConnFromResponse{}
@@ -198,6 +202,7 @@ func TestPreparedFieldHistoryCacheAndMigration(t *testing.T) {
 		t.Fatal("migration did not leave admission")
 	}
 	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedNotSafeToStartTransfer))
+	require.True(t, response.SourcePrincipalExported, "the FIELD history guard must be reached")
 	require.Empty(t, response.PrepareStmts)
 	require.True(t, rt.mc.tryBeginRequest())
 	rt.mc.endRequest()

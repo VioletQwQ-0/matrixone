@@ -1453,11 +1453,9 @@ func initExecuteStmtParamWithResolverInSession(
 		prepareStmt.preparedMetadataCheckTS = preparedMetadataTS
 	}
 
-	// These DDL plans cache catalog state that is not represented by a table
-	// schema version. CREATE PITR stores account/database/table IDs, while DROP
-	// DATABASE validates publication rows. Refresh them on every EXECUTE so a
-	// catalog change between PREPARE and EXECUTE cannot bypass validation or
-	// persist a stale object ID.
+	// Some plans bind catalog values not represented by a schema version.
+	// Refresh them on every EXECUTE so that an external catalog change cannot
+	// leave an obsolete identity, validation, or object ID in the plan.
 	if preparedDDLNeedsCatalogRefresh(prepareStmt.PrepareStmt) {
 		change = true
 	}
@@ -2259,6 +2257,8 @@ func preparedDDLNeedsCatalogRefresh(stmt tree.Statement) bool {
 		return ddl.SubscriptionOption != nil
 	case *tree.CreatePitr, *tree.DropDatabase, *tree.CloneTable:
 		return true
+	case *tree.ShowGrants:
+		return ddl.ShowGrantType != tree.GrantForRole && ddl.Username == ""
 	default:
 		return false
 	}

@@ -35,10 +35,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The prepared-plan fixture attaches this identity to its context but does
+// not authenticate a Session. Migration exports the Session's principal.
+func setPreparedMigrationTestPrincipal(ses *Session) {
+	ses.SetTenantInfo(&TenantInfo{
+		Tenant: sysAccountName, TenantID: sysAccountID,
+		User: rootName, UserID: rootID,
+		DefaultRole: moAdminRoleName, DefaultRoleID: moAdminRoleID,
+	})
+	// This synthetic fixture has no transaction client or role-rule catalog.
+	// Supply the same empty, versioned rule-cache proof used by other session
+	// tests so prepared execution can perform its normal freshness check.
+	ses.ruleCache = map[string]string{}
+	seedRewriteRuleCacheProofForTest(ses)
+}
+
 func TestDependentPreparedMigrationProtocol(t *testing.T) {
 	ses, prepared, _, execCtx := newPreparedExecuteEnvForSQL(t, 112,
 		"select (select (select t.k limit 1)) from (select 1 as k union all select 2) t")
 	defer ses.Close()
+	setPreparedMigrationTestPrincipal(ses)
 	prepared.rewritePolicyCaptured = true
 	prepared.rewritePolicyGeneration = ses.rewritePolicyGeneration
 	// A sparse snapshot must retain the dependent handle's protocol identity.
@@ -56,6 +72,7 @@ func TestDependentPreparedMigrationProtocol(t *testing.T) {
 	resp := &query.MigrateConnFromResponse{}
 	err := rt.migrateConnectionFromActionWithCapabilities(execCtx.reqCtx, query.MigrateConnFromAction_MigrateConnFromExport, true, true, resp, false)
 	require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedNotSafeToStartTransfer))
+	require.True(t, resp.SourcePrincipalExported, "the dependent-protocol guard must be reached")
 	require.Empty(t, resp.PrepareStmts)
 	require.NoError(t, rt.migrateConnectionFromActionWithCapabilities(execCtx.reqCtx, query.MigrateConnFromAction_MigrateConnFromExport, true, true, resp, true))
 	require.Len(t, resp.PrepareStmts, 1)
@@ -104,6 +121,7 @@ func TestDependentPreparedMigrationRejectsTargetBeforeStateChange(t *testing.T) 
 func TestMigrateConnectionFromPreservesPreparedVariableBinding(t *testing.T) {
 	ses, scratch, cw, execCtx := newPreparedExecuteEnv(t, 125)
 	t.Cleanup(ses.Close)
+	setPreparedMigrationTestPrincipal(ses)
 	scratch.rewritePolicyCaptured = true
 	scratch.rewritePolicyGeneration = ses.rewritePolicyGeneration
 	staticType := plan.Type{Id: int32(types.T_varchar), Width: 8, Charset: uint32(types.CharsetBinary)}
@@ -134,9 +152,14 @@ func TestMigrateConnectionFromPreservesPreparedVariableBinding(t *testing.T) {
 			"bound_s", value, "", false,
 			plan.Type{Id: int32(types.T_text), Charset: uint32(types.CharsetUTF8)},
 			vector.PrepareParamNone, false, types.RuntimeStringBinary))
+		require.True(t, plan.HasBoundStringVariable(prepared.PreparePlan))
+		require.Nil(t, prepared.fieldTypes)
 		resp := &query.MigrateConnFromResponse{}
 		err := rt.migrateConnectionFrom(resp)
 		require.True(t, moerr.IsMoErrCode(err, moerr.OkExpectedNotSafeToStartTransfer))
+		require.True(t, resp.SourcePrincipalExported, "the bound-variable guard must be reached")
+		require.Equal(t, uint32(sysAccountID), resp.SourceAccountID)
+		require.Equal(t, uint32(rootID), resp.SourceUserID)
 		require.Empty(t, resp.PrepareStmts)
 		require.Equal(t, original, p.String())
 		require.True(t, rt.mc.tryBeginRequest(), "rejected migration must release request admission")

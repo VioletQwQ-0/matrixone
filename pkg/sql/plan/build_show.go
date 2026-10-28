@@ -1122,15 +1122,19 @@ func buildShowGrants(stmt *tree.ShowGrants, ctx CompilerContext) (*Plan, error) 
 			stmt.Hostname = MO_DEFUALT_HOSTNAME
 		}
 		if stmt.Username == "" {
-			identity, ok := ctx.(interface{ GetCurrentUserID() (uint32, error) })
+			identity, ok := ctx.(interface {
+				GetCurrentUserForShowGrants() (uint32, string, string, error)
+			})
 			if !ok {
 				return nil, moerr.NewInternalError(ctx.GetContext(), "current user identity is unavailable")
 			}
-			id, err := identity.GetCurrentUserID()
+			id, name, host, err := identity.GetCurrentUserForShowGrants()
 			if err != nil {
 				return nil, err
 			}
-			sql := fmt.Sprintf("select concat('GRANT ', p.privilege_name, ' ON ', p.obj_type, ' ', case p.obj_type when 'account' then '' else p.privilege_level end, ' `', u.user_name, '`@`', u.user_host, '`') as `Grants for current user` from mo_catalog.mo_user as u, mo_catalog.mo_role_privs as p, mo_catalog.mo_user_grant as g where g.role_id = p.role_id and g.user_id = u.user_id and u.user_id = %d;", id)
+			// Resolve the label in the caller's transaction, but never use the
+			// potentially reused name as the authorization predicate.
+			sql := fmt.Sprintf("select concat(\"GRANT \", p.privilege_name, ' ON ', p.obj_type, ' ', case p.obj_type when 'account' then '' else p.privilege_level end, %s, \"@\", %s) as %s from mo_catalog.mo_user as u, mo_catalog.mo_role_privs as p, mo_catalog.mo_user_grant as g where g.role_id = p.role_id and g.user_id = u.user_id and u.user_id = %d;", sqlquote.String(" `"+name+"`"), sqlquote.String("`"+host+"`"), sqlquote.Ident("Grants for "+name+"@localhost"), id)
 			return returnByRewriteSQL(ctx, sql, ddlType)
 		}
 		sql := "select concat(\"GRANT \", p.privilege_name, ' ON ', p.obj_type, ' ', case p.obj_type when 'account' then '' else p.privilege_level end,   \" `%s`\", \"@\", \"`%s`\")  as `Grants for %s@localhost` from mo_catalog.mo_user as u, mo_catalog.mo_role_privs as p, mo_catalog.mo_user_grant as g where g.role_id = p.role_id and g.user_id = u.user_id and u.user_name = '%s' and u.user_host = '%s';"

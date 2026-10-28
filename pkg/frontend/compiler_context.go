@@ -1834,12 +1834,32 @@ func (tcc *TxnCompilerContext) CheckTimeStampValid(ts int64) (bool, error) {
 	return checkTimeStampValid(tcc.GetContext(), tcc.GetSession(), ts)
 }
 
-func (tcc *TxnCompilerContext) GetCurrentUserID() (uint32, error) {
+func (tcc *TxnCompilerContext) GetCurrentUserForShowGrants() (uint32, string, string, error) {
 	tcc.mu.Lock()
-	defer tcc.mu.Unlock()
 	tenant := tcc.execCtx.ses.GetTenantInfo()
+	ses := tcc.execCtx.ses
+	ctx := tcc.execCtx.reqCtx
+	tcc.mu.Unlock()
 	if tenant == nil {
-		return 0, moerr.NewInternalError(tcc.GetContext(), "current user identity is unavailable")
+		return 0, "", "", moerr.NewInternalError(ctx, "current user identity is unavailable")
 	}
-	return tenant.GetUserID(), nil
+	if ses.GetTxnHandler() == nil || ses.GetTxnHandler().GetTxn() == nil {
+		return 0, "", "", moerr.NewInternalError(ctx, "current user transaction is unavailable")
+	}
+	id := tenant.GetUserID()
+	bh := ses.GetShareTxnBackgroundExec(ctx, false)
+	defer bh.Close()
+	users, err := queryAccountUsers(ctx, bh, fmt.Sprintf("user_id = %d", id), false)
+	if err != nil {
+		return 0, "", "", err
+	}
+	if len(users) > 1 {
+		return 0, "", "", moerr.NewInternalError(ctx, "current user identity is ambiguous")
+	}
+	if len(users) == 0 {
+		// A dropped or internal special user has no catalog row. The ID-bound
+		// grants query remains empty, while the legacy column label is retained.
+		return id, tenant.GetUser(), rootHost, nil
+	}
+	return id, users[0].name, users[0].host, nil
 }
