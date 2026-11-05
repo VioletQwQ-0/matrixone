@@ -1,0 +1,12 @@
+{
+  "base": "d2dab994dd87445b5f5d44a06293bd5e09a1eee9",
+  "previous_candidate": "61d76463baf34090c16fe94669aa4dd0fa4655ad",
+  "tree": "8471af6767fa123d8f998004ebbd1f36ee8a78ec",
+  "native_sha256": "5e38155c83dbc61edc904e23d643d5d842cd926a6cc477191bbfa045dc05034e",
+  "native_source_ref": "d2dab994dd87445b5f5d44a06293bd5e09a1eee9",
+  "native_build_log_sha256": "61322bc5dd1f17e0735a2e3dd487c65ebd8b4fef51f133e38e1485d64cff6c47",
+  "native_provenance": "Built locally by top-level make cgo from exact new native inputs. Reusable stamp intentionally not issued for a worktree whose merge changed tracked native inputs; no cross-worktree reuse or fabricated stamp.",
+  "go_version": "go1.27.1 darwin/arm64",
+  "status": "FROZEN_FOR_AFFECTED_INTEGRATION_VALIDATION",
+  "revision": "R3: preserve M0 panic object identities and assert cleanup via upstream bounded drain"
+}

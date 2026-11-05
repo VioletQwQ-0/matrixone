@@ -1,0 +1,54 @@
+{
+  "lint-default": {
+    "exit_code": 0,
+    "stable": true,
+    "seconds": 78.381,
+    "log_sha256": "e92606b0bf483111dff0a120c315ea165821348f31365020e2468a0059095c47",
+    "packages": [
+      "./pkg/sql/compile",
+      "./pkg/sql/plan",
+      "./pkg/vm/engine/disttae",
+      "./pkg/vm/engine/tae/blockio",
+      "./pkg/tests/sqlintegration"
+    ]
+  },
+  "lint-m0": {
+    "exit_code": 0,
+    "stable": true,
+    "seconds": 37.138,
+    "log_sha256": "e92606b0bf483111dff0a120c315ea165821348f31365020e2468a0059095c47",
+    "packages": [
+      "./pkg/sql/compile",
+      "./pkg/sql/plan",
+      "./pkg/vm/engine/disttae",
+      "./pkg/vm/engine/tae/blockio",
+      "./pkg/tests/sqlintegration"
+    ]
+  },
+  "molint-default": {
+    "exit_code": 0,
+    "stable": true,
+    "seconds": 21.38,
+    "log_sha256": "be71701c105723d3e4af7dde19414169e48f26abc1fbe06d67fa57a02dd4a4b5",
+    "packages": [
+      "./pkg/sql/compile",
+      "./pkg/sql/plan",
+      "./pkg/vm/engine/disttae",
+      "./pkg/vm/engine/tae/blockio",
+      "./pkg/tests/sqlintegration"
+    ]
+  },
+  "molint-m0": {
+    "exit_code": 0,
+    "stable": true,
+    "seconds": 27.675,
+    "log_sha256": "5aa2ea383f907f786b8b36ce6a39a36885dc1e17e1a34ce69db13b56caff9fd6",
+    "packages": [
+      "./pkg/sql/compile",
+      "./pkg/sql/plan",
+      "./pkg/vm/engine/disttae",
+      "./pkg/vm/engine/tae/blockio",
+      "./pkg/tests/sqlintegration"
+    ]
+  }
+}

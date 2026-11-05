@@ -1,0 +1,85 @@
+{
+  "status": "COMMITTED_PASS_AFFECTED_LOCAL_INTEGRATION",
+  "source": {
+    "base": "d2dab994dd87445b5f5d44a06293bd5e09a1eee9",
+    "previous_candidate": "61d76463baf34090c16fe94669aa4dd0fa4655ad",
+    "tree": "8471af6767fa123d8f998004ebbd1f36ee8a78ec",
+    "native_sha256": "5e38155c83dbc61edc904e23d643d5d842cd926a6cc477191bbfa045dc05034e",
+    "native_source_ref": "d2dab994dd87445b5f5d44a06293bd5e09a1eee9",
+    "native_build_log_sha256": "61322bc5dd1f17e0735a2e3dd487c65ebd8b4fef51f133e38e1485d64cff6c47",
+    "native_provenance": "Built locally by top-level make cgo from exact new native inputs. Reusable stamp intentionally not issued for a worktree whose merge changed tracked native inputs; no cross-worktree reuse or fabricated stamp.",
+    "go_version": "go1.27.1 darwin/arm64",
+    "status": "FROZEN_FOR_AFFECTED_INTEGRATION_VALIDATION",
+    "revision": "R3: preserve M0 panic object identities and assert cleanup via upstream bounded drain"
+  },
+  "final_tree": "a01d3b1b48dd731fb197222fd0dcf4ea8954f46a",
+  "documentation_only_delta": [
+    "M0_STATUS.md",
+    "docs/design/20261027-m0-read-boundary-r3.md"
+  ],
+  "tests": {
+    "unit_default": 42,
+    "unit_m0": 107,
+    "sql_default": 3,
+    "sql_m0_unique": 23,
+    "sql_m0_reused_unchanged_roots": [
+      "TestM0CloneScopedWorkspaceTombstoneSQL",
+      "TestM0CloneMultipleWorkspaceOwnersCommit",
+      "TestM0CloneOldLayoutDeleteCommit",
+      "TestM0CloneIntermediateLayoutDeleteCommit",
+      "TestM0CloneMultiBlockPhysicalRewrite",
+      "TestM0ContractCNWorkspaceWriterSQL",
+      "TestM0CommentPreservesLayoutGenerationSQL",
+      "TestM0ContractControlsActualRelationReadSQL",
+      "TestM0EvolutionContractTNRecoverySQL",
+      "TestM0EvolutionContractHistoricalRelationSQL",
+      "TestM0EvolutionSiblingLayoutIsolationSQL",
+      "TestM0ModeGeneratedColumnUsesCopyAndRestartSQL",
+      "TestM0MetadataOnlyAddColumnSQL",
+      "TestM0ConcurrentAddColumnSQL",
+      "TestM0PartitionMemberColumnMappingSQL",
+      "TestM0AppendPublicOrdinalsSQL",
+      "TestM0RangesRCRefreshAndReopenSQL",
+      "TestM0RemoteStatementSQL",
+      "TestM0StatementViewTransactionSQL",
+      "TestM0NullableVectorOrderSQL"
+    ],
+    "sql_m0_revalidated_cleanup_roots": [
+      "TestM0CloneCompactionFailureCannotCommit",
+      "TestM0ClonePhysicalRewriteCancelAfterSync",
+      "TestM0ClonePhysicalRewritePanicAfterSync"
+    ],
+    "race_unit_invocations": 51,
+    "race_sql_roots": 7
+  },
+  "source_reuse": "R3 only adds a panic diagnostic for non-nil M0 rewrites and deterministic SQL cleanup assertions. Unchanged non-panic unit/SQL cases retain their R2 evidence; affected error/cancel/panic cases were revalidated. Subsequent changes are documentation only.",
+  "qualification": {
+    "linux": "NOT_RUN",
+    "external_BVT": "NOT_RUN",
+    "published_head_CI": "PENDING_NEW_HEAD",
+    "independent_review": "PENDING_NEW_HEAD",
+    "QA": "NOT_RUN"
+  },
+  "receipts": {
+    "ar1-conflict-checks-r2.json": "3dfe3b62f122ae471b17712831aaac6b77a3a5f43632c8add70227bd059ae429",
+    "ar1-conflict-race-checks.json": "56b57e2298cca56d55757ad684ec76fddac7d18d24f4d243695f55d3100edf97",
+    "ar1-conflict-static-r3.json": "53544e388f501b398c3f9b2def818a0302ff69be72c9db6d70d91f416bdb9ff0",
+    "ar1-conflict-precise-cleanup-r1.log": "bf52d26afeb501dc2d5080b92c4fcd88ecc8ba2376abe078936d6a84d9ed1190",
+    "ar1-conflict-precise-fix-r1.log": "9a818c7579ed280e70681c69d14d78efaeee03d66d5efc081c1367fa4980f478",
+    "ar1-conflict-final-pr-diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ar1-conflict-final-gofmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "ar1-conflict-final-err-check.log": "e2ab8b713de98acd495ee90828abbf4ca6c528544f3843be57388c4492dcef1f"
+  },
+  "failures_retained": [
+    "ar1-conflict-checks-r1.json",
+    "ar1-conflict-checks-r2.json",
+    "ar1-conflict-source-r1.json",
+    "ar1-conflict-source-r2.json"
+  ],
+  "native_stamp": "No fabricated reusable stamp; actual local build log/source ref/library SHA recorded.",
+  "commit": "b875a35deeb7314fdfae127032d2d5a644a63759",
+  "parents": [
+    "61d76463baf34090c16fe94669aa4dd0fa4655ad",
+    "d2dab994dd87445b5f5d44a06293bd5e09a1eee9"
+  ]
+}

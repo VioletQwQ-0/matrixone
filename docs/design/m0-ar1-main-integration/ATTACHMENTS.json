@@ -1,0 +1,13 @@
+{
+  "candidate": "b875a35deeb7314fdfae127032d2d5a644a63759",
+  "files": {
+    "INTEGRATION.md": "0046a16feed00e7ae35581970f4d17a6f11acc442424e500d4000407503c3b19",
+    "attachments/ar1-conflict-checks-r1.json": "8543f0a40aaf7fd7f5b41f9a2ffa14626c165b4edd8dbe46e489316a2c03f321",
+    "attachments/ar1-conflict-checks-r2.json": "3dfe3b62f122ae471b17712831aaac6b77a3a5f43632c8add70227bd059ae429",
+    "attachments/ar1-conflict-current-source.json": "75c6a973c9aec1c1a223785b7f670718f9587ed9b50b1403890a488d323e77ac",
+    "attachments/ar1-conflict-integration-receipt.json": "6ec131dc89346655d08c8d028c5b7477ab176682d4ef45089a26ec3de460ebc9",
+    "attachments/ar1-conflict-race-checks.json": "56b57e2298cca56d55757ad684ec76fddac7d18d24f4d243695f55d3100edf97",
+    "attachments/ar1-conflict-static-r3.json": "53544e388f501b398c3f9b2def818a0302ff69be72c9db6d70d91f416bdb9ff0"
+  },
+  "raw_logs_published": false
+}
