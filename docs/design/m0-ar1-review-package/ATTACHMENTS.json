@@ -1,0 +1,20 @@
+{
+  "candidate": "61d76463baf34090c16fe94669aa4dd0fa4655ad",
+  "tree": "189f65182fba2b0a27a71f6a13faf3c5a1a10c4f",
+  "original_local_review_package_sha256": "1f4ac154016ba86326edc477094f44d53dd03ee7125906025f9b4227ccb9dd3c",
+  "files": {
+    "EVIDENCE_SUMMARY.md": "1d6a72351edc83e7be7e84305f888ef8affaedea63144ee49f53ee63aeb41f32",
+    "REVIEW_PACKAGE.md": "52619cc77159fe24b47c7d8cf1a322901f2fbb8d53af0e694515e3b007725ebc",
+    "attachments/TERMINAL_RESULTS.json": "55e9223195830b02062303a89123710f37c5fa398d3c8f3bbc2f1806124fdba9",
+    "attachments/ar1-m1-current-source.json": "5d64423a3e98662d14900362f0d97bfa8cf71afa11965f98178313aa24d22545",
+    "attachments/ar1-m2-final-source.json": "20e774f3e90bb34ad6857eb05ad7689ddce82ceb3c52990ab5f29630ba00017f",
+    "attachments/ar1-m3-code-validation-source.json": "9e4b936e7af3f32aa1e6d63f916567dd05ddbd52c4298a0332f278f7f3f9177f",
+    "attachments/ar1-m3-final-checks.json": "25f043d1334284422daf3a0e183676cebc70c45f1033bb79f2e6eba542b40606",
+    "attachments/ar1-m3-final-lint-checks.json": "b5d8cea551b613a8b4c39dce28a73d6701734f7d984945d29e8344f2ff87a8b7",
+    "attachments/ar1-m3-final-molint-checks.json": "e5743b521142b48df1e5f3c2f7857157565ff58fe77a334e9edf66e33bc828cd",
+    "attachments/ar1-m3-final-source.json": "5aa451d31dc3e4667c166d380dda02150d61b231cc566170da246f4350e61868",
+    "attachments/ar1-split-commit-binding.json": "611905bc23d26cac8456134bf47cd2b80e1bba7bcb48b988d07f68a485efe31c"
+  },
+  "raw_logs_published": false,
+  "qualification": "author-reported local evidence; external qualifications and independent review remain pending"
+}
