@@ -1,0 +1,29 @@
+{
+  "previous_candidate": "b875a35deeb7314fdfae127032d2d5a644a63759",
+  "main": "a86c130cc09c5859e1651d49746a35bc79c2c07a",
+  "tested_tree": "6c81df2fbff444d82715edb18612f6d26c6b3da1",
+  "native_sha256": "5e38155c83dbc61edc904e23d643d5d842cd926a6cc477191bbfa045dc05034e",
+  "native_reused": true,
+  "unit_default": 15,
+  "unit_m0": 3,
+  "owner_units": 5,
+  "sql_default": 2,
+  "sql_m0": 9,
+  "race_sql": 3,
+  "static": "PASS_BOTH_MODES",
+  "pending": [
+    "current-head CI",
+    "external BVT",
+    "Linux",
+    "independent review",
+    "QA"
+  ],
+  "receipt_hashes": {
+    "ar1-new-conflict-checks.json": "2e4147f7ad63c224fdd9851b05f92ae2535cdb87ca36879e82a74eb7186fff89",
+    "ar1-new-conflict-static.json": "8ef589e86a71bdd9b6e147b27b8ccf9a9c8c59f4719e9465b3d3ff05841cfdff",
+    "ar1-new-conflict-scope.json": "8c77c739099f35a458b6326b3ac4d22428abd51eecd50c8080db3e16f75a5f90"
+  },
+  "commit": "bdb42ba880d44be1b1859951e5c5cbf49914c62c",
+  "final_tree": "b07aaf0e9c0cd3c4800849515605d08a5ab492af",
+  "post_test_changes": "M0_STATUS.md only; no executable changes after validation"
+}
