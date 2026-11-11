@@ -1,0 +1,1643 @@
+{
+  "conditions": {
+    "major_faults": 107,
+    "max_rss_kb": 514764,
+    "swapin": 0,
+    "swapout": 0,
+    "times": 50,
+    "windows": 50
+  },
+  "contract64": {
+    "case_count": 30,
+    "cases": [
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 23203.0,
+        "candidate_allocs": 207.0,
+        "candidate_bytes": 22333.0,
+        "candidate_ns": 23397.0,
+        "pairs": [
+          0.9976924416579589,
+          1.016221332989114,
+          0.9925871654527432,
+          1.0189793336145085,
+          1.0251500679139465
+        ],
+        "ratio": 1.016221332989114,
+        "scenario": "string/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 24464.0,
+        "candidate_allocs": 207.0,
+        "candidate_bytes": 22350.0,
+        "candidate_ns": 24902.0,
+        "pairs": [
+          1.010668737737083,
+          0.8826267898709177,
+          1.0342221114710524,
+          1.0191725942277818,
+          1.015806886410979
+        ],
+        "ratio": 1.015806886410979,
+        "scenario": "wide/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 25096.0,
+        "base_ns": 25064.0,
+        "candidate_allocs": 207.0,
+        "candidate_bytes": 22334.0,
+        "candidate_ns": 25499.0,
+        "pairs": [
+          1.0149938190373649,
+          1.0328610310598783,
+          1.0236451224407868,
+          0.9755640535372849,
+          1.0144031279923396
+        ],
+        "ratio": 1.0149938190373649,
+        "scenario": "integer/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193089.0,
+        "base_ns": 187175.0,
+        "candidate_allocs": 1608.0,
+        "candidate_bytes": 172634.0,
+        "candidate_ns": 188489.0,
+        "pairs": [
+          1.0113644290152437,
+          1.0128827332677641,
+          0.9356564134926613,
+          1.001616121723586,
+          1.0223427273941499
+        ],
+        "ratio": 1.0113644290152437,
+        "scenario": "mixed/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 26313.0,
+        "candidate_allocs": 207.0,
+        "candidate_bytes": 22337.0,
+        "candidate_ns": 26234.0,
+        "pairs": [
+          0.9939953635085319,
+          1.017652086662455,
+          1.0174247912456629,
+          0.9387333139872316,
+          1.0105936284140375
+        ],
+        "ratio": 1.0105936284140375,
+        "scenario": "wide/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 22669.0,
+        "candidate_allocs": 207.0,
+        "candidate_bytes": 22332.0,
+        "candidate_ns": 22877.0,
+        "pairs": [
+          1.008734394988751,
+          0.9385568186448274,
+          1.0040247678018577,
+          1.011598609904431,
+          1.022892913033758
+        ],
+        "ratio": 1.008734394988751,
+        "scenario": "mixed/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 46616.0,
+        "candidate_allocs": 407.0,
+        "candidate_bytes": 43809.0,
+        "candidate_ns": 47256.0,
+        "pairs": [
+          0.988061256380873,
+          1.0271926964460385,
+          1.0081527056112356,
+          1.035266861163549,
+          0.9995100754057854
+        ],
+        "ratio": 1.0081527056112356,
+        "scenario": "mixed/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 23495.0,
+        "candidate_allocs": 207.0,
+        "candidate_bytes": 22350.0,
+        "candidate_ns": 23928.0,
+        "pairs": [
+          1.0184294530751223,
+          1.0044356008788293,
+          1.0580402120110386,
+          0.9670467359979953,
+          1.0065456449642172
+        ],
+        "ratio": 1.0065456449642172,
+        "scenario": "mixed/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 23789.0,
+        "candidate_allocs": 207.0,
+        "candidate_bytes": 22350.0,
+        "candidate_ns": 24223.0,
+        "pairs": [
+          1.0034401672182547,
+          1.0182437260918913,
+          1.0692354793561931,
+          1.0042150502086864,
+          0.987112330589507
+        ],
+        "ratio": 1.0042150502086864,
+        "scenario": "string/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 45515.0,
+        "candidate_allocs": 407.0,
+        "candidate_bytes": 43800.0,
+        "candidate_ns": 45448.0,
+        "pairs": [
+          0.9682963849755222,
+          0.9883335164231573,
+          1.0254323725055432,
+          1.0178983460203135,
+          1.0012778144965853
+        ],
+        "ratio": 1.0012778144965853,
+        "scenario": "mixed/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 49680.0,
+        "base_ns": 47502.0,
+        "candidate_allocs": 407.0,
+        "candidate_bytes": 43800.0,
+        "candidate_ns": 47318.0,
+        "pairs": [
+          0.961472122358222,
+          0.9628477837210266,
+          1.035981149698565,
+          1.0166437849825747,
+          0.9961264788850995
+        ],
+        "ratio": 0.9961264788850995,
+        "scenario": "integer/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 45404.0,
+        "candidate_allocs": 407.0,
+        "candidate_bytes": 43799.0,
+        "candidate_ns": 45464.0,
+        "pairs": [
+          0.976104085707538,
+          0.9937112488928255,
+          1.0336673524011768,
+          1.0315390714474495,
+          0.9783359226652857
+        ],
+        "ratio": 0.9937112488928255,
+        "scenario": "string/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 46957.0,
+        "candidate_allocs": 407.0,
+        "candidate_bytes": 43808.0,
+        "candidate_ns": 46662.0,
+        "pairs": [
+          0.9972319768642842,
+          0.9836296501824856,
+          0.9929084055625359,
+          0.9931677415235298,
+          1.0301191765980497
+        ],
+        "ratio": 0.9931677415235298,
+        "scenario": "string/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 48862.0,
+        "candidate_allocs": 407.0,
+        "candidate_bytes": 43810.0,
+        "candidate_ns": 47962.0,
+        "pairs": [
+          0.9810218086297827,
+          0.9426678983470587,
+          0.9858846836435676,
+          0.9974417747943187,
+          0.9832493054841033
+        ],
+        "ratio": 0.9832493054841033,
+        "scenario": "wide/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 25096.0,
+        "base_ns": 24017.0,
+        "candidate_allocs": 207.0,
+        "candidate_bytes": 22333.0,
+        "candidate_ns": 23640.0,
+        "pairs": [
+          0.9949613843802916,
+          1.020448109278694,
+          0.9775144966834926,
+          0.9704035138130619,
+          0.981846192280468
+        ],
+        "ratio": 0.981846192280468,
+        "scenario": "integer/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 52337.0,
+        "candidate_allocs": 407.0,
+        "candidate_bytes": 43828.0,
+        "candidate_ns": 51751.0,
+        "pairs": [
+          0.9264863466725788,
+          0.9652291365171249,
+          0.9800786418441699,
+          0.9888033322506067,
+          1.0217160095140487
+        ],
+        "ratio": 0.9800786418441699,
+        "scenario": "wide/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 49680.0,
+        "base_ns": 48928.0,
+        "candidate_allocs": 407.0,
+        "candidate_bytes": 43811.0,
+        "candidate_ns": 48515.0,
+        "pairs": [
+          0.9683417583506789,
+          0.9799259244101578,
+          1.0020071684587815,
+          0.9858568206295341,
+          0.9739617396991498
+        ],
+        "ratio": 0.9799259244101578,
+        "scenario": "integer/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193089.0,
+        "base_ns": 191680.0,
+        "candidate_allocs": 1608.0,
+        "candidate_bytes": 172629.0,
+        "candidate_ns": 185947.0,
+        "pairs": [
+          0.9528137880515246,
+          0.9746722647670866,
+          0.9732412197752387,
+          0.9758591552308729,
+          0.9912927796327212
+        ],
+        "ratio": 0.9746722647670866,
+        "scenario": "wide/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193089.0,
+        "base_ns": 192522.0,
+        "candidate_allocs": 1608.0,
+        "candidate_bytes": 172693.0,
+        "candidate_ns": 188549.0,
+        "pairs": [
+          1.0029723968765731,
+          0.9741539005911248,
+          0.9538815672982066,
+          0.9831863371458847,
+          0.9697887363636829
+        ],
+        "ratio": 0.9741539005911248,
+        "scenario": "string/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 197185.0,
+        "base_ns": 199140.0,
+        "candidate_allocs": 1608.0,
+        "candidate_bytes": 172618.0,
+        "candidate_ns": 191803.0,
+        "pairs": [
+          0.9681500540474705,
+          0.9631565732650397,
+          0.915614520097662,
+          0.9606292107795957,
+          1.0071932014148184
+        ],
+        "ratio": 0.9631565732650397,
+        "scenario": "integer/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193088.0,
+        "base_ns": 211315.0,
+        "candidate_allocs": 1608.0,
+        "candidate_bytes": 172690.0,
+        "candidate_ns": 200762.0,
+        "pairs": [
+          0.9566868461859749,
+          0.9660108872123007,
+          0.93315835603012,
+          0.9372992455367147,
+          0.9564725646546625
+        ],
+        "ratio": 0.9564725646546625,
+        "scenario": "wide/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193088.0,
+        "base_ns": 192038.0,
+        "candidate_allocs": 1607.0,
+        "candidate_bytes": 172601.0,
+        "candidate_ns": 182678.0,
+        "pairs": [
+          0.9508662237853328,
+          0.9657429312878448,
+          0.9376226031406945,
+          0.9512596465282913,
+          0.943145698759356
+        ],
+        "ratio": 0.9508662237853328,
+        "scenario": "string/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193088.0,
+        "base_ns": 193702.0,
+        "candidate_allocs": 1607.0,
+        "candidate_bytes": 172596.0,
+        "candidate_ns": 183320.0,
+        "pairs": [
+          0.9460408255980837,
+          0.969591531951686,
+          0.9425368518709412,
+          0.9563207837531887,
+          0.9499740651913784
+        ],
+        "ratio": 0.9499740651913784,
+        "scenario": "mixed/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 197184.0,
+        "base_ns": 199730.0,
+        "candidate_allocs": 1608.0,
+        "candidate_bytes": 172610.0,
+        "candidate_ns": 187576.0,
+        "pairs": [
+          0.9391478495969559,
+          0.943021830261805,
+          0.929352175404238,
+          0.9338371530994481,
+          0.9482372100972123
+        ],
+        "ratio": 0.9391478495969559,
+        "scenario": "integer/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 2561.0,
+        "base_bytes": 188937.0,
+        "base_ns": 331263.0,
+        "candidate_allocs": 2385.0,
+        "candidate_bytes": 187307.0,
+        "candidate_ns": 292838.0,
+        "pairs": [
+          0.8858671206865844,
+          0.8872453818023166,
+          0.8703837321748815,
+          0.8863037501242211,
+          0.8699670825719161
+        ],
+        "ratio": 0.8858671206865844,
+        "scenario": "deep/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 2561.0,
+        "base_bytes": 188937.0,
+        "base_ns": 342569.0,
+        "candidate_allocs": 2385.0,
+        "candidate_bytes": 187307.0,
+        "candidate_ns": 300992.0,
+        "pairs": [
+          0.8957583155324992,
+          0.8708748738471231,
+          0.8786317500999798,
+          0.9058596485034626,
+          0.8812543476282862
+        ],
+        "ratio": 0.8812543476282862,
+        "scenario": "deep/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 5122.0,
+        "base_bytes": 377874.0,
+        "base_ns": 687697.0,
+        "candidate_allocs": 4762.0,
+        "candidate_bytes": 373865.0,
+        "candidate_ns": 604877.0,
+        "pairs": [
+          0.8650819234950898,
+          0.8762104665429582,
+          0.8768744184446072,
+          0.8690831657610105,
+          0.8927841767522615
+        ],
+        "ratio": 0.8762104665429582,
+        "scenario": "deep/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 5122.0,
+        "base_bytes": 377874.0,
+        "base_ns": 661266.0,
+        "candidate_allocs": 4762.0,
+        "candidate_bytes": 373924.0,
+        "candidate_ns": 578218.0,
+        "pairs": [
+          0.8255786082584541,
+          0.8803241607576435,
+          0.87441060027281,
+          0.8868955992799951,
+          0.8706377976492544
+        ],
+        "ratio": 0.87441060027281,
+        "scenario": "deep/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 20488.0,
+        "base_bytes": 1511498.0,
+        "base_ns": 2595838.0,
+        "candidate_allocs": 19027.0,
+        "candidate_bytes": 1494245.0,
+        "candidate_ns": 2259253.0,
+        "pairs": [
+          0.86160696599887,
+          0.8813019148344389,
+          0.8751048730019901,
+          0.8634678044996121,
+          0.869317676329199
+        ],
+        "ratio": 0.869317676329199,
+        "scenario": "deep/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 20488.0,
+        "base_bytes": 1511497.0,
+        "base_ns": 2773926.0,
+        "candidate_allocs": 19034.0,
+        "candidate_bytes": 1496159.0,
+        "candidate_ns": 2414572.0,
+        "pairs": [
+          0.8717471590287532,
+          0.866102722507811,
+          0.8864554265672879,
+          0.8681486095879991,
+          0.8623449869946753
+        ],
+        "ratio": 0.8681486095879991,
+        "scenario": "deep/elements=16/paths=8"
+      }
+    ],
+    "incomplete": [],
+    "interleaved_rows_recovered": 0
+  },
+  "mutable": {
+    "case_count": 2,
+    "cases": [
+      {
+        "base_allocs": 6.0,
+        "base_bytes": 392.0,
+        "base_ns": 486.6,
+        "candidate_allocs": 6.0,
+        "candidate_bytes": 392.0,
+        "candidate_ns": 4735.0,
+        "pairs": [
+          9.467978317606907,
+          9.880165289256198,
+          9.914092861525875,
+          9.730785039046443,
+          9.709338280766852
+        ],
+        "ratio": 9.730785039046443,
+        "scenario": "elements=4096/JSON"
+      },
+      {
+        "base_allocs": 6.0,
+        "base_bytes": 392.0,
+        "base_ns": 482.0,
+        "candidate_allocs": 6.0,
+        "candidate_bytes": 392.0,
+        "candidate_ns": 585.5,
+        "pairs": [
+          1.2151452282157678,
+          1.2067247820672478,
+          1.1647105629600158,
+          1.1980725856059051,
+          1.2471395881006866
+        ],
+        "ratio": 1.2067247820672478,
+        "scenario": "elements=16/JSON"
+      }
+    ],
+    "incomplete": [],
+    "interleaved_rows_recovered": 0
+  },
+  "projection64": {
+    "case_count": 30,
+    "cases": [
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 22967.0,
+        "candidate_allocs": 203.0,
+        "candidate_bytes": 22156.0,
+        "candidate_ns": 24542.0,
+        "pairs": [
+          1.0211475199726578,
+          1.0936162780543184,
+          1.069741086217418,
+          1.0643857185412144,
+          1.0094483389210607
+        ],
+        "ratio": 1.0643857185412144,
+        "scenario": "mixed/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 23437.0,
+        "candidate_allocs": 203.0,
+        "candidate_bytes": 22174.0,
+        "candidate_ns": 24580.0,
+        "pairs": [
+          1.0220632081097198,
+          1.060374621325255,
+          1.0802021533728852,
+          1.0896290160861415,
+          1.0313148862239925
+        ],
+        "ratio": 1.060374621325255,
+        "scenario": "string/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 22713.0,
+        "candidate_allocs": 203.0,
+        "candidate_bytes": 22157.0,
+        "candidate_ns": 23793.0,
+        "pairs": [
+          1.0020745991269395,
+          1.0515123497556464,
+          1.0509275618374558,
+          1.069472661425669,
+          0.9893598690445421
+        ],
+        "ratio": 1.0509275618374558,
+        "scenario": "string/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 24091.0,
+        "candidate_allocs": 203.0,
+        "candidate_bytes": 22174.0,
+        "candidate_ns": 25075.0,
+        "pairs": [
+          1.0174251742517426,
+          1.0528546497132885,
+          1.0462738880080114,
+          1.0598563779004608,
+          1.0161356209150327
+        ],
+        "ratio": 1.0462738880080114,
+        "scenario": "wide/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 22696.0,
+        "candidate_allocs": 203.0,
+        "candidate_bytes": 22156.0,
+        "candidate_ns": 23138.0,
+        "pairs": [
+          1.0394266853551566,
+          1.0309247050659265,
+          1.0132645866384629,
+          0.9850658857979502,
+          1.0194747973211138
+        ],
+        "ratio": 1.0194747973211138,
+        "scenario": "mixed/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 24584.0,
+        "base_ns": 26240.0,
+        "candidate_allocs": 203.0,
+        "candidate_bytes": 22161.0,
+        "candidate_ns": 26700.0,
+        "pairs": [
+          0.986857291783015,
+          1.0136289434721537,
+          1.043646535867566,
+          1.0078506097560975,
+          1.0311915397243538
+        ],
+        "ratio": 1.0136289434721537,
+        "scenario": "wide/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 25096.0,
+        "base_ns": 25634.0,
+        "candidate_allocs": 203.0,
+        "candidate_bytes": 22158.0,
+        "candidate_ns": 26005.0,
+        "pairs": [
+          1.0369468128298822,
+          0.9977801592161666,
+          1.0107271949939756,
+          1.0175938207068738,
+          1.0078758949880668
+        ],
+        "ratio": 1.0107271949939756,
+        "scenario": "integer/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193089.0,
+        "base_ns": 185079.0,
+        "candidate_allocs": 1576.0,
+        "candidate_bytes": 171231.0,
+        "candidate_ns": 186565.0,
+        "pairs": [
+          0.9509549562407295,
+          1.0146588833811636,
+          1.0053382609588337,
+          1.0083488696956684,
+          0.9515535103626289
+        ],
+        "ratio": 1.0053382609588337,
+        "scenario": "wide/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 385.0,
+        "base_bytes": 25096.0,
+        "base_ns": 24219.0,
+        "candidate_allocs": 203.0,
+        "candidate_bytes": 22158.0,
+        "candidate_ns": 24323.0,
+        "pairs": [
+          0.9873965309263342,
+          1.0324797512885544,
+          1.00324142458559,
+          1.0042941492216855,
+          1.0006690361697679
+        ],
+        "ratio": 1.00324142458559,
+        "scenario": "integer/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 47136.0,
+        "candidate_allocs": 399.0,
+        "candidate_bytes": 43456.0,
+        "candidate_ns": 47127.0,
+        "pairs": [
+          0.9896169820027688,
+          1.0041270449082051,
+          0.9987914767306265,
+          0.9998090631364562,
+          0.9863631528560791
+        ],
+        "ratio": 0.9987914767306265,
+        "scenario": "string/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 49680.0,
+        "base_ns": 48927.0,
+        "candidate_allocs": 399.0,
+        "candidate_bytes": 43460.0,
+        "candidate_ns": 48514.0,
+        "pairs": [
+          0.9733375529095296,
+          0.9870480081716037,
+          0.9964057590010064,
+          0.9903379664694684,
+          1.0036585116602286
+        ],
+        "ratio": 0.9903379664694684,
+        "scenario": "integer/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 48756.0,
+        "candidate_allocs": 399.0,
+        "candidate_bytes": 43458.0,
+        "candidate_ns": 48485.0,
+        "pairs": [
+          1.007096295073851,
+          0.9713318374869782,
+          0.9814970563498738,
+          0.9886988268110591,
+          0.9902421916903907
+        ],
+        "ratio": 0.9886988268110591,
+        "scenario": "wide/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 47649.0,
+        "candidate_allocs": 399.0,
+        "candidate_bytes": 43456.0,
+        "candidate_ns": 47289.0,
+        "pairs": [
+          0.9926546202438666,
+          0.9796971140897884,
+          0.9968078932095182,
+          0.9856084384942242,
+          0.97907263901899
+        ],
+        "ratio": 0.9856084384942242,
+        "scenario": "mixed/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 45463.0,
+        "candidate_allocs": 399.0,
+        "candidate_bytes": 43448.0,
+        "candidate_ns": 45115.0,
+        "pairs": [
+          0.9830523092845745,
+          0.975364582187713,
+          0.9798707536459698,
+          0.9973471869127888,
+          0.9978883463112049
+        ],
+        "ratio": 0.9830523092845745,
+        "scenario": "mixed/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193089.0,
+        "base_ns": 187024.0,
+        "candidate_allocs": 1576.0,
+        "candidate_bytes": 171199.0,
+        "candidate_ns": 185045.0,
+        "pairs": [
+          0.9894184703567457,
+          0.9398205577893747,
+          0.976981495347096,
+          0.9931829396494389,
+          0.9797651603827561
+        ],
+        "ratio": 0.9797651603827561,
+        "scenario": "mixed/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 49680.0,
+        "base_ns": 47692.0,
+        "candidate_allocs": 399.0,
+        "candidate_bytes": 43450.0,
+        "candidate_ns": 46471.0,
+        "pairs": [
+          0.963648805573988,
+          0.9777330081645637,
+          0.9827644049316447,
+          0.9721540751923843,
+          0.9779523986305325
+        ],
+        "ratio": 0.9777330081645637,
+        "scenario": "integer/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 46200.0,
+        "candidate_allocs": 399.0,
+        "candidate_bytes": 43445.0,
+        "candidate_ns": 45001.0,
+        "pairs": [
+          0.9655416568326646,
+          0.9617965367965368,
+          0.9744140197152246,
+          0.9957857111336658,
+          0.9969574253819288
+        ],
+        "ratio": 0.9744140197152246,
+        "scenario": "string/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193088.0,
+        "base_ns": 207717.0,
+        "candidate_allocs": 1576.0,
+        "candidate_bytes": 171224.0,
+        "candidate_ns": 201933.0,
+        "pairs": [
+          0.975986558635066,
+          0.9662513278401424,
+          0.9732671185079678,
+          0.9717468714531363,
+          0.966894201266167
+        ],
+        "ratio": 0.9717468714531363,
+        "scenario": "wide/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 197184.0,
+        "base_ns": 198889.0,
+        "candidate_allocs": 1576.0,
+        "candidate_bytes": 171199.0,
+        "candidate_ns": 190823.0,
+        "pairs": [
+          0.9877579272852206,
+          0.9647196861734003,
+          0.9594447153940138,
+          0.9156370515899003,
+          0.9396358641010581
+        ],
+        "ratio": 0.9594447153940138,
+        "scenario": "integer/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 197185.0,
+        "base_ns": 199416.0,
+        "candidate_allocs": 1576.0,
+        "candidate_bytes": 171200.0,
+        "candidate_ns": 192061.0,
+        "pairs": [
+          1.00616440096557,
+          0.9799180599703057,
+          0.9528573434428531,
+          0.9221171841259177,
+          0.9207862138054598
+        ],
+        "ratio": 0.9528573434428531,
+        "scenario": "integer/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 770.0,
+        "base_bytes": 48656.0,
+        "base_ns": 53346.0,
+        "candidate_allocs": 399.0,
+        "candidate_bytes": 43456.0,
+        "candidate_ns": 50850.0,
+        "pairs": [
+          0.9495440163781872,
+          0.9525078840666766,
+          0.9780915193598646,
+          1.061697714830247,
+          0.9367525212761969
+        ],
+        "ratio": 0.9525078840666766,
+        "scenario": "wide/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193089.0,
+        "base_ns": 187064.0,
+        "candidate_allocs": 1576.0,
+        "candidate_bytes": 171316.0,
+        "candidate_ns": 185266.0,
+        "pairs": [
+          0.9459503039489172,
+          0.9837488773895565,
+          0.997587927820486,
+          0.9478757769054629,
+          0.9380699453662588
+        ],
+        "ratio": 0.9478757769054629,
+        "scenario": "string/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193088.0,
+        "base_ns": 192504.0,
+        "candidate_allocs": 1576.0,
+        "candidate_bytes": 171195.0,
+        "candidate_ns": 180739.0,
+        "pairs": [
+          0.9438166456046538,
+          0.9344688941528487,
+          0.9372992291447227,
+          0.9347684912944545,
+          0.9387292639634156
+        ],
+        "ratio": 0.9372992291447227,
+        "scenario": "mixed/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 3080.0,
+        "base_bytes": 193088.0,
+        "base_ns": 193612.0,
+        "candidate_allocs": 1576.0,
+        "candidate_bytes": 171322.0,
+        "candidate_ns": 181080.0,
+        "pairs": [
+          0.8958702698383367,
+          0.9352726070698097,
+          0.9706055107456394,
+          0.9192693077679349,
+          0.9416277552879787
+        ],
+        "ratio": 0.9352726070698097,
+        "scenario": "string/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 2561.0,
+        "base_bytes": 188937.0,
+        "base_ns": 331120.0,
+        "candidate_allocs": 2380.0,
+        "candidate_bytes": 186929.0,
+        "candidate_ns": 294681.0,
+        "pairs": [
+          0.9042137536724817,
+          0.8906023893403291,
+          0.8993032773127195,
+          0.8655612191324227,
+          0.8694884029958927
+        ],
+        "ratio": 0.8906023893403291,
+        "scenario": "deep/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 5122.0,
+        "base_bytes": 377874.0,
+        "base_ns": 664342.0,
+        "candidate_allocs": 4754.0,
+        "candidate_bytes": 373566.0,
+        "candidate_ns": 576068.0,
+        "pairs": [
+          0.8596200909331502,
+          0.8867792936003411,
+          0.8671256672015317,
+          0.8924851901024077,
+          0.8949703942891414
+        ],
+        "ratio": 0.8867792936003411,
+        "scenario": "deep/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 5122.0,
+        "base_bytes": 377874.0,
+        "base_ns": 678273.0,
+        "candidate_allocs": 4754.0,
+        "candidate_bytes": 373513.0,
+        "candidate_ns": 595558.0,
+        "pairs": [
+          0.8661883747764888,
+          0.8904998429835774,
+          0.8803313672604405,
+          0.8848922032135952,
+          0.8489960583619037
+        ],
+        "ratio": 0.8803313672604405,
+        "scenario": "deep/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 20488.0,
+        "base_bytes": 1511496.0,
+        "base_ns": 2571993.0,
+        "candidate_allocs": 18995.0,
+        "candidate_bytes": 1492835.0,
+        "candidate_ns": 2251307.0,
+        "pairs": [
+          0.892306984342464,
+          0.8904236153546475,
+          0.8767854344860192,
+          0.8655056178923599,
+          0.865236470696019
+        ],
+        "ratio": 0.8767854344860192,
+        "scenario": "deep/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 2561.0,
+        "base_bytes": 188937.0,
+        "base_ns": 347361.0,
+        "candidate_allocs": 2380.0,
+        "candidate_bytes": 186960.0,
+        "candidate_ns": 303578.0,
+        "pairs": [
+          0.8784218426131084,
+          0.8766660446957845,
+          0.8557322209459324,
+          0.8642612582762209,
+          0.8926979310020349
+        ],
+        "ratio": 0.8766660446957845,
+        "scenario": "deep/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 20488.0,
+        "base_bytes": 1511497.0,
+        "base_ns": 2754360.0,
+        "candidate_allocs": 18995.0,
+        "candidate_bytes": 1492941.0,
+        "candidate_ns": 2406956.0,
+        "pairs": [
+          0.8708463521043613,
+          0.8740987847734801,
+          0.8736388852582814,
+          0.8732426014078357,
+          0.877606345764809
+        ],
+        "ratio": 0.8736388852582814,
+        "scenario": "deep/elements=16/paths=8"
+      }
+    ],
+    "incomplete": [],
+    "interleaved_rows_recovered": 0
+  },
+  "sql": {
+    "case_count": 30,
+    "cases": [
+      {
+        "base_allocs": 22071.0,
+        "base_bytes": 1681794.0,
+        "base_ns": 2958739.0,
+        "candidate_allocs": 20714.0,
+        "candidate_bytes": 1686666.0,
+        "candidate_ns": 3132369.0,
+        "pairs": [
+          1.067955982465197,
+          1.0810109552826563,
+          1.0279070805332018,
+          1.0557227251203976,
+          1.0455516766569475
+        ],
+        "ratio": 1.0557227251203976,
+        "scenario": "deep/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 1175.0,
+        "base_bytes": 118019.0,
+        "base_ns": 4287456.0,
+        "candidate_allocs": 1324.0,
+        "candidate_bytes": 156902.0,
+        "candidate_ns": 4429332.0,
+        "pairs": [
+          1.0640953387316008,
+          1.0164652418590419,
+          1.032393612458838,
+          1.0591925773537336,
+          1.0225796886026155
+        ],
+        "ratio": 1.032393612458838,
+        "scenario": "mixed/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 1638.0,
+        "base_bytes": 136703.0,
+        "base_ns": 343076.0,
+        "candidate_allocs": 1347.0,
+        "candidate_bytes": 139774.0,
+        "candidate_ns": 347009.0,
+        "pairs": [
+          0.9228529839883551,
+          0.9836090367170133,
+          1.0182058785808392,
+          1.0688014441727987,
+          1.035751915494387
+        ],
+        "ratio": 1.0182058785808392,
+        "scenario": "wide/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 1157.0,
+        "base_bytes": 107063.0,
+        "base_ns": 299162.0,
+        "candidate_allocs": 1021.0,
+        "candidate_bytes": 107384.0,
+        "candidate_ns": 304583.0,
+        "pairs": [
+          1.0370893414597888,
+          1.0224189171727613,
+          1.0046645474318219,
+          1.0181206169232724,
+          0.9718246623836795
+        ],
+        "ratio": 1.0181206169232724,
+        "scenario": "mixed/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 1186.0,
+        "base_bytes": 110952.0,
+        "base_ns": 326435.0,
+        "candidate_allocs": 1058.0,
+        "candidate_bytes": 111422.0,
+        "candidate_ns": 326557.0,
+        "pairs": [
+          1.0559061376623533,
+          1.0051124052004334,
+          1.006898898847957,
+          0.9263748445854489,
+          1.0046961876024323
+        ],
+        "ratio": 1.0051124052004334,
+        "scenario": "wide/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 4856.0,
+        "base_bytes": 359363.0,
+        "base_ns": 4632788.0,
+        "candidate_allocs": 3214.0,
+        "candidate_bytes": 340438.0,
+        "candidate_ns": 4577439.0,
+        "pairs": [
+          0.9752917016106488,
+          1.032160979522482,
+          1.0482776436413064,
+          0.9789723016534957,
+          1.0013825936275123
+        ],
+        "ratio": 1.0013825936275123,
+        "scenario": "mixed/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 1647.0,
+        "base_bytes": 138382.0,
+        "base_ns": 336797.0,
+        "candidate_allocs": 1332.0,
+        "candidate_bytes": 136980.0,
+        "candidate_ns": 337136.0,
+        "pairs": [
+          0.999073862404089,
+          1.0311419955100718,
+          1.0756182507563903,
+          0.982185378682873,
+          0.9971722508511153
+        ],
+        "ratio": 0.999073862404089,
+        "scenario": "string/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 1708.0,
+        "base_bytes": 146883.0,
+        "base_ns": 353652.0,
+        "candidate_allocs": 1354.0,
+        "candidate_bytes": 140962.0,
+        "candidate_ns": 349819.0,
+        "pairs": [
+          0.8611638772626978,
+          0.9976158902625087,
+          1.0973926626198103,
+          1.0447530340560778,
+          0.9374108321584433
+        ],
+        "ratio": 0.9976158902625087,
+        "scenario": "integer/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 2213.0,
+        "base_bytes": 210818.0,
+        "base_ns": 4494528.0,
+        "candidate_allocs": 1581.0,
+        "candidate_bytes": 168522.0,
+        "candidate_ns": 4431339.0,
+        "pairs": [
+          0.9951402331682258,
+          0.9696399710937389,
+          1.0067988964580976,
+          0.9677320156556116,
+          0.9960769125641298
+        ],
+        "ratio": 0.9951402331682258,
+        "scenario": "mixed/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 1675.0,
+        "base_bytes": 140994.0,
+        "base_ns": 341860.0,
+        "candidate_allocs": 1356.0,
+        "candidate_bytes": 141253.0,
+        "candidate_ns": 336213.0,
+        "pairs": [
+          0.9117741490314477,
+          0.9477125138945768,
+          1.022769584580565,
+          0.9903288144866966,
+          1.0007395229340499
+        ],
+        "ratio": 0.9903288144866966,
+        "scenario": "mixed/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 4654.0,
+        "base_bytes": 340771.0,
+        "base_ns": 621431.0,
+        "candidate_allocs": 3158.0,
+        "candidate_bytes": 322035.0,
+        "candidate_ns": 620569.0,
+        "pairs": [
+          0.9851504028604946,
+          0.9513518356741258,
+          0.9938335954491673,
+          1.0612091310577922,
+          0.9366485445451005
+        ],
+        "ratio": 0.9851504028604946,
+        "scenario": "integer/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 4917.0,
+        "base_bytes": 358705.0,
+        "base_ns": 10639555.0,
+        "candidate_allocs": 3593.0,
+        "candidate_bytes": 371186.0,
+        "candidate_ns": 10456262.0,
+        "pairs": [
+          0.8810545323246146,
+          1.0685202362794566,
+          1.0075934593210636,
+          0.97663896657332,
+          0.9825934215627994
+        ],
+        "ratio": 0.9825934215627994,
+        "scenario": "wide/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 1164.0,
+        "base_bytes": 108394.0,
+        "base_ns": 315104.0,
+        "candidate_allocs": 1033.0,
+        "candidate_bytes": 108317.0,
+        "candidate_ns": 317402.0,
+        "pairs": [
+          0.9711798378120527,
+          0.9802027015280844,
+          1.0946841087444898,
+          0.9868741748755966,
+          0.9405952917190205
+        ],
+        "ratio": 0.9802027015280844,
+        "scenario": "integer/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 1900.0,
+        "base_bytes": 172027.0,
+        "base_ns": 10369390.0,
+        "candidate_allocs": 1637.0,
+        "candidate_bytes": 192184.0,
+        "candidate_ns": 9984683.0,
+        "pairs": [
+          0.989808726047297,
+          1.012347302975392,
+          0.9799023835103445,
+          0.9608504534333893,
+          0.9564576230994547
+        ],
+        "ratio": 0.9799023835103445,
+        "scenario": "wide/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 1737.0,
+        "base_bytes": 175722.0,
+        "base_ns": 10847744.0,
+        "candidate_allocs": 1733.0,
+        "candidate_bytes": 197768.0,
+        "candidate_ns": 10532520.0,
+        "pairs": [
+          1.0009767880267342,
+          0.9746119150609986,
+          0.961020951676306,
+          0.9686975466972672,
+          0.999680137355402
+        ],
+        "ratio": 0.9746119150609986,
+        "scenario": "wide/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 1188.0,
+        "base_bytes": 111081.0,
+        "base_ns": 316755.0,
+        "candidate_allocs": 1020.0,
+        "candidate_bytes": 107483.0,
+        "candidate_ns": 305631.0,
+        "pairs": [
+          0.9648813751953402,
+          0.9618255708601967,
+          0.9551334560441502,
+          0.9760729230055019,
+          0.9306598332841322
+        ],
+        "ratio": 0.9618255708601967,
+        "scenario": "string/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 4670.0,
+        "base_bytes": 338651.0,
+        "base_ns": 659424.0,
+        "candidate_allocs": 3116.0,
+        "candidate_bytes": 316084.0,
+        "candidate_ns": 634834.0,
+        "pairs": [
+          0.9459634755911905,
+          0.9808157886198708,
+          0.9031572704696246,
+          1.0086727204348036,
+          0.9562484347979426
+        ],
+        "ratio": 0.9562484347979426,
+        "scenario": "mixed/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 3324.0,
+        "base_bytes": 273972.0,
+        "base_ns": 685602.0,
+        "candidate_allocs": 3216.0,
+        "candidate_bytes": 276384.0,
+        "candidate_ns": 651802.0,
+        "pairs": [
+          0.9534567539879995,
+          0.9456931773336119,
+          0.9540612863708633,
+          0.9787967362989023,
+          0.9989486353224366
+        ],
+        "ratio": 0.9540612863708633,
+        "scenario": "deep/elements=16/paths=1"
+      },
+      {
+        "base_allocs": 4657.0,
+        "base_bytes": 335956.0,
+        "base_ns": 675761.0,
+        "candidate_allocs": 3091.0,
+        "candidate_bytes": 313299.0,
+        "candidate_ns": 636954.0,
+        "pairs": [
+          1.1275221871372891,
+          0.9395294638247659,
+          0.9087769196505865,
+          0.8940708047477064,
+          0.9440405291003727
+        ],
+        "ratio": 0.9395294638247659,
+        "scenario": "wide/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 4671.0,
+        "base_bytes": 339533.0,
+        "base_ns": 651747.0,
+        "candidate_allocs": 3071.0,
+        "candidate_bytes": 311107.0,
+        "candidate_ns": 612729.0,
+        "pairs": [
+          1.0300753649306786,
+          0.9255019236557506,
+          0.9227292185464605,
+          0.8704858047595451,
+          1.010162681132775
+        ],
+        "ratio": 0.9255019236557506,
+        "scenario": "string/elements=16/paths=8"
+      },
+      {
+        "base_allocs": 1195.0,
+        "base_bytes": 124399.0,
+        "base_ns": 6310379.0,
+        "candidate_allocs": 1800.0,
+        "candidate_bytes": 212018.0,
+        "candidate_ns": 5816678.0,
+        "pairs": [
+          0.9152531060046318,
+          0.9206226757537067,
+          1.013736140406759,
+          0.8855968816991603,
+          0.9396087444503962
+        ],
+        "ratio": 0.9206226757537067,
+        "scenario": "string/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 1773.0,
+        "base_bytes": 149393.0,
+        "base_ns": 6444635.0,
+        "candidate_allocs": 1761.0,
+        "candidate_bytes": 190373.0,
+        "candidate_ns": 5876841.0,
+        "pairs": [
+          0.872660440152286,
+          0.9314671714080534,
+          0.8312914422694776,
+          0.911896639607984,
+          0.9588694118830721
+        ],
+        "ratio": 0.911896639607984,
+        "scenario": "string/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 6067.0,
+        "base_bytes": 480619.0,
+        "base_ns": 1011730.0,
+        "candidate_allocs": 5723.0,
+        "candidate_bytes": 477452.0,
+        "candidate_ns": 927800.0,
+        "pairs": [
+          0.9476357518628541,
+          0.8723374709807054,
+          0.9090093206685578,
+          0.8844622349496997,
+          0.9498460824786316
+        ],
+        "ratio": 0.9090093206685578,
+        "scenario": "deep/elements=16/paths=2"
+      },
+      {
+        "base_allocs": 4992.0,
+        "base_bytes": 368369.0,
+        "base_ns": 6705107.0,
+        "candidate_allocs": 3170.0,
+        "candidate_bytes": 341672.0,
+        "candidate_ns": 5885258.0,
+        "pairs": [
+          0.9036096083518043,
+          0.8867735499627903,
+          0.9019022366086029,
+          0.857126269258518,
+          0.866844352668839
+        ],
+        "ratio": 0.8867735499627903,
+        "scenario": "string/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 22113.0,
+        "base_bytes": 1699924.0,
+        "base_ns": 7024813.0,
+        "candidate_allocs": 21013.0,
+        "candidate_bytes": 1746284.0,
+        "candidate_ns": 5851891.0,
+        "pairs": [
+          0.7787648075908827,
+          0.8273066572098539,
+          0.8371647753497478,
+          0.8330315696659826,
+          0.7968153284205354
+        ],
+        "ratio": 0.8273066572098539,
+        "scenario": "deep/elements=4096/paths=8"
+      },
+      {
+        "base_allocs": 6259.0,
+        "base_bytes": 504421.0,
+        "base_ns": 5089385.0,
+        "candidate_allocs": 5756.0,
+        "candidate_bytes": 484636.0,
+        "candidate_ns": 3678941.0,
+        "pairs": [
+          0.7881217475195923,
+          0.7275685668726133,
+          0.64956282497873,
+          0.6963988581844299,
+          0.7343182729449811
+        ],
+        "ratio": 0.7275685668726133,
+        "scenario": "deep/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 3974.0,
+        "base_bytes": 356427.0,
+        "base_ns": 5007941.0,
+        "candidate_allocs": 3645.0,
+        "candidate_bytes": 329264.0,
+        "candidate_ns": 3494664.0,
+        "pairs": [
+          0.6704828708251473,
+          0.73506496981494,
+          0.6588687918166848,
+          0.7317584586681198,
+          0.722506963895497
+        ],
+        "ratio": 0.722506963895497,
+        "scenario": "deep/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 1190.0,
+        "base_bytes": 119399.0,
+        "base_ns": 4364112.0,
+        "candidate_allocs": 1060.0,
+        "candidate_bytes": 121206.0,
+        "candidate_ns": 3050808.0,
+        "pairs": [
+          0.6605817511184389,
+          0.7370184358238285,
+          0.7128552934494791,
+          0.7068498984850373,
+          0.7180424521363166
+        ],
+        "ratio": 0.7128552934494791,
+        "scenario": "integer/elements=4096/paths=1"
+      },
+      {
+        "base_allocs": 2338.0,
+        "base_bytes": 233378.0,
+        "base_ns": 4444831.0,
+        "candidate_allocs": 1628.0,
+        "candidate_bytes": 174526.0,
+        "candidate_ns": 3060847.0,
+        "pairs": [
+          0.7128192689773305,
+          0.7211501291971566,
+          0.6264635543484885,
+          0.6732737420162881,
+          0.7099206454129783
+        ],
+        "ratio": 0.7099206454129783,
+        "scenario": "integer/elements=4096/paths=2"
+      },
+      {
+        "base_allocs": 4704.0,
+        "base_bytes": 356523.0,
+        "base_ns": 4711900.0,
+        "candidate_allocs": 3279.0,
+        "candidate_bytes": 336480.0,
+        "candidate_ns": 3333112.0,
+        "pairs": [
+          0.6952475492460896,
+          0.728274891319372,
+          0.6904105461297821,
+          0.7004410110571108,
+          0.7356935338495214
+        ],
+        "ratio": 0.7004410110571108,
+        "scenario": "integer/elements=4096/paths=8"
+      }
+    ],
+    "incomplete": [],
+    "interleaved_rows_recovered": 10
+  },
+  "warm": {
+    "case_count": 2,
+    "cases": [
+      {
+        "base_allocs": 6.0,
+        "base_bytes": 392.0,
+        "base_ns": 489.8,
+        "candidate_allocs": 3.0,
+        "candidate_bytes": 336.0,
+        "candidate_ns": 412.5,
+        "pairs": [
+          0.827789046653144,
+          0.8641360713544908,
+          0.842180481829318,
+          0.8231032400885491,
+          0.8732190790832128
+        ],
+        "ratio": 0.842180481829318,
+        "scenario": "elements=16/JSON"
+      },
+      {
+        "base_allocs": 6.0,
+        "base_bytes": 392.0,
+        "base_ns": 491.3,
+        "candidate_allocs": 3.0,
+        "candidate_bytes": 336.0,
+        "candidate_ns": 406.1,
+        "pairs": [
+          0.8271931610014247,
+          0.8116349047141425,
+          0.8466544641041286,
+          0.8328547990155866,
+          0.8298661174047374
+        ],
+        "ratio": 0.8298661174047374,
+        "scenario": "elements=4096/JSON"
+      }
+    ],
+    "incomplete": [],
+    "interleaved_rows_recovered": 0
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "base": "4df268ea5f21882599fdfd6f415b67f849b99675",
+  "base_snapshot": "dc4a5455e1bcdaa33b234519d6ae6d982ebabfe7",
+  "binaries": {
+    "sql-base": "03cff46e0ab8cfb960b9a986c38a8fc9449c8bbf7333b2ad9a117d106ed326b6",
+    "sql-candidate": "af2561a9e328310a6bdc590147853f4297a69e39d069583a5e1aa1340dedbc28"
+  },
+  "candidate": "ed025175c334b483913f87d9221b97dbf1750b26",
+  "candidate_snapshot": "6efc9d8026108b9907c739702b8a062f0e2abd9a",
+  "candidate_tree": "05c54b0b4d7ffe3bf2da56696fa8ab41654aada1",
+  "core": 0,
+  "goamd64": "v3",
+  "goexperiment": "simd",
+  "harness": {
+    "base": {
+      "pkg/sql/colexec/eval_json_reader_bench_source_test.go": "ee01789e330fc851c85181a64795be1024bbdc9d55cc29ef69965c822ff6197a",
+      "pkg/sql/colexec/eval_json_reader_bench_test.go": "8d6f5914c24e064e68ff54b4659ef2750cc138a6ec392daf539cc1973d177305",
+      "pkg/sql/plan/function/func_json_value_legacy_bench_test.go": "fae45feecc7aad3d5434ed8dfc16d11fa928d8512ccb6313149e2a78574b6c04",
+      "pkg/tests/sqlintegration/json_value_cold_sql_bench_test.go": "55977aede076c20589a0002356271f0ba2ca689b4bd86b3f07505dd767ef55f2",
+      "pkg/tests/sqlintegration/json_value_sql_bench_test.go": "cde0fc97f614e77a5fd277d60610584d19cf7a1edf813730e80c58fc3d083d62"
+    },
+    "candidate": {
+      "pkg/sql/colexec/eval_json_reader_bench_source_test.go": "52773d265e68354eb42b8b1b8bd6ccc80d964077d22a23fa03455011b2e49fb9",
+      "pkg/sql/colexec/eval_json_reader_bench_test.go": "8d6f5914c24e064e68ff54b4659ef2750cc138a6ec392daf539cc1973d177305",
+      "pkg/sql/plan/function/func_json_value_legacy_bench_test.go": "fae45feecc7aad3d5434ed8dfc16d11fa928d8512ccb6313149e2a78574b6c04",
+      "pkg/tests/sqlintegration/json_value_cold_sql_bench_test.go": "55977aede076c20589a0002356271f0ba2ca689b4bd86b3f07505dd767ef55f2",
+      "pkg/tests/sqlintegration/json_value_sql_bench_test.go": "cde0fc97f614e77a5fd277d60610584d19cf7a1edf813730e80c58fc3d083d62"
+    }
+  },
+  "native_sha256": "d5336efa3f24d17cacb144c78471474ffc7fa705f243aeda4404f09f26ebcc13",
+  "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+  "protocol": "five alternating AB/BA pairs; reused baseline binaries and existing harness; 200ms; native execution; SQL includes admission, scan, copies, execution and result release"
+}
