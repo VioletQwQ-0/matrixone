@@ -98,6 +98,11 @@ func (limit *Limit) Call(proc *process.Process) (vm.CallResult, error) {
 		batch.SetLength(limit.ctr.buf, int(limit.ctr.limit-limit.ctr.seen))
 		result.Batch = limit.ctr.buf
 		result.Status = vm.ExecStop
+		if limit.ctr.limit == process.IVFDiagnosticLimit {
+			if d := process.IVFSampleDiagnosticFrom(proc.Ctx); d != nil {
+				d.LimitReached(proc)
+			}
+		}
 	}
 	limit.ctr.seen = newSeen
 	return result, nil

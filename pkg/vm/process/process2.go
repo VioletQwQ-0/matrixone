@@ -298,6 +298,13 @@ func (qbCtx *QueryBaseContext) DoSpecialCleanUp(isMergeCTE bool) bool {
 // BuildQueryCtx refreshes the query context and cancellation method after the outer context was ready to run the query.
 func (qbCtx *QueryBaseContext) BuildQueryCtx(parent context.Context) context.Context {
 	qbCtx.queryContext, qbCtx.queryCancel = context.WithCancel(parent)
+	if d := IVFSampleDiagnosticFrom(parent); d != nil {
+		ctx, cancel := qbCtx.queryContext, qbCtx.queryCancel
+		qbCtx.queryCancel = func() {
+			d.queryCancel(ctx)
+			cancel()
+		}
+	}
 
 	qbCtx.Lock()
 	qbCtx.pipelineLoopBreak = false

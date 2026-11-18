@@ -338,7 +338,14 @@ func (u *ivfCreateState) start(tf *TableFunction, proc *process.Process, nthRow 
 
 		logutil.Infof("IVFFLAT START: pick sample. %s", sql)
 
-		res, err := ivf_runSql(sqlexec.NewSqlProcess(proc), sql)
+		sampleProc := sqlexec.NewSqlProcess(proc)
+		if u.nsample == process.IVFDiagnosticLimit && proc.Base != nil && proc.GetTxnOperator() != nil {
+			sampleProc.IVFSampleDiagnostic = process.BeginIVFSampleDiagnostic(proc, sql)
+		}
+		res, err := ivf_runSql(sampleProc, sql)
+		if d := sampleProc.IVFSampleDiagnostic; d != nil {
+			d.Finish(err)
+		}
 		if err != nil {
 			return err
 		}

@@ -551,6 +551,8 @@ func (exec *txnExecutor) Exec(
 		}
 	}
 
+	sampleDiagnostic := process.IVFSampleDiagnosticFrom(exec.ctx)
+	var diagnosticRows int
 	var batches []*batch.Batch
 	err = c.Compile(
 		exec.ctx,
@@ -584,6 +586,12 @@ func (exec *txnExecutor) Exec(
 					}
 				} else {
 					batches = append(batches, rows)
+					if sampleDiagnostic != nil {
+						diagnosticRows += rows.RowCount()
+						if diagnosticRows == process.IVFDiagnosticLimit {
+							sampleDiagnostic.LimitDelivered()
+						}
+					}
 				}
 			}
 			return nil

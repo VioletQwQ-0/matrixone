@@ -73,8 +73,9 @@ func (s *SqlContext) SetResolveVariableFunc(f func(varName string, isSystemVar, 
 // Either process.Process or SqlContext is used in SqlProcess.
 // We will look for process.Process first before SqlContext
 type SqlProcess struct {
-	Proc   *process.Process
-	SqlCtx *SqlContext
+	IVFSampleDiagnostic *process.IVFSampleDiagnostic
+	Proc                *process.Process
+	SqlCtx              *SqlContext
 
 	// Optional RuntimeFilterSpec
 	RuntimeFilterSpecs []*plan.RuntimeFilterSpec
@@ -165,6 +166,9 @@ func RunSql(sqlproc *SqlProcess, sql string) (executor.Result, error) {
 
 		//-------------------------------------------------------
 		topContext := proc.GetTopContext()
+		if d := sqlproc.IVFSampleDiagnostic; d != nil {
+			topContext = d.Context(topContext)
+		}
 		// Attach optional membership filter payload to context for internal executor.
 		if len(sqlproc.IvfMembershipFilter) > 0 {
 			topContext = context.WithValue(topContext, defines.IvfMembershipFilter{}, sqlproc.IvfMembershipFilter)

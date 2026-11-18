@@ -52,6 +52,8 @@ type PipelineEdge struct {
 	terminalMu  sync.Mutex
 	terminalErr error
 
+	ivfSampleDiagnostic *IVFSampleDiagnostic
+
 	fatalSignal    PipelineSignal
 	fatalTerminal  bool
 	fatalDelivered int
@@ -359,6 +361,9 @@ func (e *PipelineEdge) recordFatalTerminalLocked(signal PipelineSignal) Pipeline
 		e.fatalRemaining = e.expectedEndCountLocked() - e.endRecorded
 		if e.fatalRemaining <= 0 {
 			e.fatalRemaining = 1
+		}
+		if d := e.ivfSampleDiagnostic; d != nil {
+			d.fatalEdge(e, signal)
 		}
 		e.closeDoneLocked()
 		if signal.EventType == EventAbort {

@@ -40,6 +40,7 @@ import (
 	"github.com/matrixorigin/matrixone/pkg/perfcounter"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/aggexec"
+	"github.com/matrixorigin/matrixone/pkg/sql/colexec/connector"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/dispatch"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/filter"
 	"github.com/matrixorigin/matrixone/pkg/sql/colexec/group"
@@ -368,6 +369,7 @@ func (s *Scope) Run(c *Compile) (err error) {
 				readers, err := s.buildReaders(c)
 				stats.AddBuildReaderTimeConsumption(time.Since(buildStart))
 				if err != nil {
+					s.recordIVFSampleScopeError("serial_reader_build", err)
 					return err
 				}
 
@@ -384,7 +386,7 @@ func (s *Scope) Run(c *Compile) (err error) {
 			_, err = p.RunWithReader(s.DataSource.R, tag, s.Proc)
 		}
 	}
-	err, _ = normalizeScopeRunError(err, s.Proc.Ctx, scopeRunQueryContext(s.Proc))
+	err, _ = s.normalizeIVFSampleScopeError("scope_run", err)
 	return err
 }
 
@@ -637,12 +639,7 @@ func (s *Scope) RemoteRun(c *Compile) error {
 	p := pipeline.New(0, nil, s.RootOp)
 	sender, err := s.remoteRun(c)
 
-	runErr := err
-	runErr = suppressRemoteRunCancelError(
-		s.Proc.Ctx,
-		scopeRunQueryContext(s.Proc),
-		runErr,
-	)
+	runErr, _ := s.normalizeIVFSampleScopeError("remote_run", err)
 	if runErr != nil && s.Proc.Cancel != nil {
 		s.Proc.Cancel(runErr)
 	}
@@ -777,11 +774,7 @@ func (s *Scope) ParallelRun(c *Compile) (err error) {
 			rawErr := err
 			queryCtx := scopeRunQueryContext(s.Proc)
 			var normalized bool
-			err, normalized = normalizeScopeRunError(
-				err,
-				s.Proc.Ctx,
-				queryCtx,
-			)
+			err, normalized = s.normalizeIVFSampleScopeError("parallel_build", err)
 			if isScopeCancellationError(rawErr) {
 				reportParallelScopeBuildCancellation(s, rawErr, err, normalized, queryCtx)
 			}
@@ -1266,11 +1259,7 @@ func (s *Scope) sendNotifyMessageWithFactoryAndWait(
 ) {
 	// if context has done, it means the user or other part of the pipeline stops this query.
 	closeWithError := func(err error, reg *process.WaitRegister, sender *messageSenderOnClient) {
-		err, _ = normalizeScopeRunError(
-			err,
-			s.Proc.Ctx,
-			scopeRunQueryContext(s.Proc),
-		)
+		err, _ = s.normalizeIVFSampleScopeError("remote_notify", err)
 		s.cancelMergeSiblingsOnError(err)
 		sendRemoteNotifyCleanupTerminal(s.Proc, reg, err)
 		resultChan <- notifyMessageResult{err: err, sender: sender}
@@ -1941,4 +1930,40 @@ func cleanupScopePipeline(p *pipeline.Pipeline, proc *process.Process, isPrepare
 		proc.Error(proc.Ctx, "panic during pipeline cleanup", zap.Error(cleanupErr))
 	}
 	return err
+}
+
+func (s *Scope) ivfDiagnosticEdge() *process.PipelineEdge {
+	if op, ok := s.RootOp.(*connector.Connector); ok {
+		return op.Reg
+	}
+	return nil
+}
+
+func (s *Scope) recordIVFSampleScopeError(phase string, err error) {
+	if d := process.IVFSampleDiagnosticFrom(s.Proc.Ctx); d != nil {
+		state := append(process.IVFDiagnosticContext("pipeline", s.Proc.Ctx),
+			process.IVFDiagnosticContext("query", scopeRunQueryContext(s.Proc))...)
+		d.ScopeError(phase, s.Proc, s.ivfDiagnosticEdge(), err, err, false, state)
+	}
+}
+
+func (s *Scope) normalizeIVFSampleScopeError(phase string, raw error) (error, bool) {
+	queryCtx := scopeRunQueryContext(s.Proc)
+	if raw == nil {
+		return normalizeScopeRunError(raw, s.Proc.Ctx, queryCtx)
+	}
+	d := process.IVFSampleDiagnosticFrom(s.Proc.Ctx)
+	if d == nil {
+		return normalizeScopeRunError(raw, s.Proc.Ctx, queryCtx)
+	}
+	state := append(process.IVFDiagnosticContext("pipeline", s.Proc.Ctx),
+		process.IVFDiagnosticContext("query", queryCtx)...)
+	retained, classified := normalizeScopeRunError(raw, s.Proc.Ctx, queryCtx)
+	if retained != nil {
+		state = append(state, process.IVFDiagnosticContext("pipeline_after", s.Proc.Ctx)...)
+		state = append(state, process.IVFDiagnosticContext("query_after", queryCtx)...)
+		state = append(state, process.IVFDiagnosticContext("outer_after", s.Proc.GetTopContext())...)
+		d.ScopeError(phase, s.Proc, s.ivfDiagnosticEdge(), raw, retained, classified, state)
+	}
+	return retained, classified
 }

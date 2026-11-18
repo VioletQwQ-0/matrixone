@@ -1009,6 +1009,14 @@ func (c *Compile) InitPipelineContextToRetryQuery() {
 func (s *Scope) buildContextFromParentCtx(parentCtx context.Context) {
 	receiverCtx := s.Proc.BuildPipelineContext(parentCtx)
 
+	if d := process.IVFSampleDiagnosticFrom(receiverCtx); d != nil {
+		for _, edge := range s.Proc.Reg.MergeReceivers {
+			if edge != nil {
+				edge.SetIVFSampleDiagnostic(d)
+			}
+		}
+	}
+
 	// build context for receiver.
 	for _, prePipeline := range s.PreScopes {
 		prePipeline.buildContextFromParentCtx(receiverCtx)
